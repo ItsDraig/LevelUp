@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+:root {
+  --bg:       #0F0F0F;
+  --surface:  #1A1A1A;
+  --surface2: #242424;
+  --surface3: #2E2E2E;
+  --border:   rgba(255,255,255,0.08);
+  --border2:  rgba(255,255,255,0.14);
+  --text:     #F0EEE8;
+  --text2:    #888580;
+  --gold:     #E8A320;
+  --gold-light: #FAC75A;
+
+  /* Category colors */
+  --cat-mind:     #AFA9EC;
+  --cat-body:     #F0997B;
+  --cat-wellness: #5DCAA5;
+  --cat-career:   #85B7EB;
+  --cat-basic:    #888780;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-inter), sans-serif;
+}
+
+/* Category pills */
+.pill-mind     { background: #1E1C3A; color: #AFA9EC; }
+.pill-body     { background: #2A1510; color: #F0997B; }
+.pill-wellness { background: #0E2620; color: #5DCAA5; }
+.pill-career   { background: #0E1E2E; color: #85B7EB; }
+.pill-basic    { background: #1E1E1C; color: #888780; }
