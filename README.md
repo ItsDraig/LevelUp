@@ -1,3 +1,17 @@
+### LEVEL UP
+
+## Overview
+LevelUp aims to build lasting habits and helps make achieving goals easy through gamifying and combining daily habit completion, one-off tasks, and monitoring progress made towards largers goals. These habits and tasks will fall under 1 of 4 major categories, with a 5th category as a catch-all.
+
+- Mind (Chess, Brain games, Reading, etc.)
+- Body (Gym, Walking, Running, Stretching, etc.)
+- Wellness (Meditation, Cooking, Supplements, etc.)
+- Career (Anything related to your career or finance)
+- Basic (Anything else)
+
+You can level up these stats as you build your streak and complete tasks, then battle enemies using your characters stats which should be a reflection of your own progress made while having it.
+
+
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
 ## Getting Started
