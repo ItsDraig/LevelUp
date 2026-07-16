@@ -1,6 +1,8 @@
 export type Category = 'Mind' | 'Body' | 'Wellness' | 'Career' | 'Basic'
 export type Difficulty = 'Easy' | 'Medium' | 'Hard'
 
+export type StatKey = 'stat_mind' | 'stat_body' | 'stat_wellness' | 'stat_career'
+
 export interface Profile {
   id: string
   user_id: string
@@ -14,6 +16,8 @@ export interface Profile {
   stat_body: number
   stat_wellness: number
   stat_career: number
+  paid_task_count: number
+  equipped_weapon_id: string | null
   created_at: string
 }
 
@@ -55,10 +59,13 @@ export interface ShopItem {
   id: string
   name: string
   description: string
-  type: 'streak_shield' | 'goal_slot' | 'task_modifier' | 'cosmetic'
+  type: 'streak_shield' | 'goal_slot' | 'task_modifier' | 'cosmetic' | 'weapon'
   cost: number
   effect_value: number | null
   icon: string
+  required_stat: StatKey | null
+  required_stat_value: number | null
+  combat_power: number | null
 }
 
 export interface InventoryItem {

@@ -160,3 +160,42 @@ insert into public.shop_items (name, description, type, cost, effect_value, icon
 
 alter table public.profiles add column if not exists max_streak integer not null default 0;
 update public.profiles set max_streak = streak where max_streak < streak;
+
+-- ============================================================
+-- Migration: shop expansion -- weapons, task pricing, equip slot
+-- Safe to re-run; guards on existence before altering.
+-- ============================================================
+
+-- Allow the 'weapon' item type
+alter table public.shop_items drop constraint if exists shop_items_type_check;
+alter table public.shop_items add constraint shop_items_type_check
+  check (type in ('streak_shield','goal_slot','task_modifier','cosmetic','weapon'));
+
+-- Weapon-specific columns: which stat (and how much of it) is required to
+-- equip, plus a combat_power number for future battle use.
+alter table public.shop_items add column if not exists required_stat text
+  check (required_stat in ('stat_mind','stat_body','stat_wellness','stat_career'));
+alter table public.shop_items add column if not exists required_stat_value integer;
+alter table public.shop_items add column if not exists combat_power integer;
+
+-- Track lifetime paid task purchases (price climbs forever, never resets)
+-- and which weapon (if any) is currently equipped.
+alter table public.profiles add column if not exists paid_task_count integer not null default 0;
+alter table public.profiles add column if not exists equipped_weapon_id uuid references public.shop_items(id) on delete set null;
+
+-- Rename the existing Streak Shield to match the "streak freeze" concept:
+-- automatically consumed to bridge a missed day instead of requiring manual use.
+update public.shop_items
+  set name = 'Streak Freeze',
+      description = 'Automatically protects your streak if you miss a day. Consumed on use.'
+  where type = 'streak_shield';
+
+-- Seed weapons (idempotent -- only insert if the table has none yet)
+insert into public.shop_items (name, description, type, cost, icon, required_stat, required_stat_value, combat_power)
+select * from (values
+  ('Wooden Sword',  'A basic training sword. Anyone can swing it.',      'weapon', 50,  'sword', 'stat_body'::text, 0,  8),
+  ('Iron Sword',    'A reliable blade for a seasoned adventurer.',       'weapon', 200, 'sword', 'stat_body'::text, 5,  18),
+  ('Greatsword',    'A massive two-handed blade. Requires real strength.', 'weapon', 500, 'sword', 'stat_body'::text, 10, 32),
+  ('Arcane Staff',  'Channels focused willpower into raw force.',        'weapon', 350, 'wand',  'stat_mind'::text, 8,  24)
+) as w(name, description, type, cost, icon, required_stat, required_stat_value, combat_power)
+where not exists (select 1 from public.shop_items where type = 'weapon');

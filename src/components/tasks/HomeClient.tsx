@@ -1,24 +1,27 @@
 'use client'
 
 import { useState, useCallback, useEffect } from 'react'
-import { ChevronDown, ChevronUp, Check } from 'lucide-react'
+import { ChevronDown, ChevronUp, Check, Snowflake } from 'lucide-react'
 import Hero from '@/components/hero/Hero'
 import TaskCard from '@/components/tasks/TaskCard'
 import CompletedTaskCard from '@/components/tasks/CompletedTaskCard'
 import { createClient } from '@/lib/supabase/client'
 import { todayString, completedToday } from '@/lib/dates'
 import { CATEGORY_CONFIG } from '@/lib/constants'
+import { useCountUp } from '@/lib/useCountUp'
 import type { Profile, TaskWithStatus } from '@/types'
 
 interface HomeClientProps {
   profile: Profile
   initialTasks: TaskWithStatus[]
+  streakFrozen?: boolean
 }
 
-export default function HomeClient({ profile, initialTasks }: HomeClientProps) {
+export default function HomeClient({ profile, initialTasks, streakFrozen }: HomeClientProps) {
   const supabase = createClient()
 
   const [gold, setGold] = useState(profile.gold)
+  const displayGold = useCountUp(gold)
   const [streak] = useState(profile.streak)
   const [activeTasks, setActiveTasks] = useState<TaskWithStatus[]>(
     initialTasks.filter(t => !t.completedToday)
@@ -33,6 +36,9 @@ export default function HomeClient({ profile, initialTasks }: HomeClientProps) {
     () => completedToday(profile.last_completed_date)
   )
   const [dayToast, setDayToast] = useState<'hidden' | 'visible' | 'fading'>('hidden')
+  const [freezeToast, setFreezeToast] = useState<'hidden' | 'visible' | 'fading'>(
+    streakFrozen ? 'visible' : 'hidden'
+  )
 
   useEffect(() => {
     if (dayToast === 'visible') {
@@ -44,6 +50,17 @@ export default function HomeClient({ profile, initialTasks }: HomeClientProps) {
       return () => clearTimeout(t)
     }
   }, [dayToast])
+
+  useEffect(() => {
+    if (freezeToast === 'visible') {
+      const t = setTimeout(() => setFreezeToast('fading'), 2400)
+      return () => clearTimeout(t)
+    }
+    if (freezeToast === 'fading') {
+      const t = setTimeout(() => setFreezeToast('hidden'), 400)
+      return () => clearTimeout(t)
+    }
+  }, [freezeToast])
 
   const handleComplete = useCallback(async (task: TaskWithStatus) => {
     const goldEarned = task.readded ? 0 : task.gold_value
@@ -152,7 +169,7 @@ export default function HomeClient({ profile, initialTasks }: HomeClientProps) {
             className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold"
             style={{ background: 'var(--gold)', color: '#1a0f00' }}
           >G</div>
-          <span className="text-sm font-medium">{gold}</span>
+          <span className="text-sm font-medium">{displayGold}</span>
         </div>
       </div>
 
@@ -212,6 +229,23 @@ export default function HomeClient({ profile, initialTasks }: HomeClientProps) {
 
         <div className="h-4" />
       </div>
+
+      {/* STREAK FREEZE CONSUMED TOAST */}
+      {freezeToast !== 'hidden' && (
+        <div
+          className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3.5 py-2 rounded-full z-30 transition-opacity duration-[400ms]"
+          style={{
+            background: 'var(--surface)',
+            border: '0.5px solid var(--border2)',
+            opacity: freezeToast === 'visible' ? 1 : 0,
+          }}
+        >
+          <Snowflake size={13} style={{ color: 'var(--cat-career)' }} />
+          <span className="text-xs font-medium" style={{ color: 'var(--text)' }}>
+            Streak Freeze used -- your streak is safe
+          </span>
+        </div>
+      )}
 
       {/* DAY ALREADY COMPLETED TOAST */}
       {dayToast !== 'hidden' && (

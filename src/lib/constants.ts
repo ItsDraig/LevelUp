@@ -1,4 +1,4 @@
-import { Category } from '@/types'
+import { Category, StatKey } from '@/types'
 
 export const CATEGORY_CONFIG: Record<Category, {
   label: string
@@ -45,3 +45,19 @@ export const DIFFICULTY_GOLD: Record<string, number> = {
 }
 
 export const CATEGORIES: Category[] = ['Mind', 'Body', 'Wellness', 'Career', 'Basic']
+
+export const STAT_LABELS: Record<StatKey, string> = {
+  stat_mind: 'Mind',
+  stat_body: 'Body',
+  stat_wellness: 'Wellness',
+  stat_career: 'Career',
+}
+
+// First FREE_TASK_LIMIT tasks are free; every task created after that costs
+// gold, climbing by TASK_BASE_COST for every paid task ever purchased.
+export const FREE_TASK_LIMIT = 3
+export const TASK_BASE_COST = 25
+
+export function taskCreationCost(paidTaskCount: number): number {
+  return TASK_BASE_COST * (paidTaskCount + 1)
+}

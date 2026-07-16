@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { todayString, isStreakAlive } from '@/lib/dates'
+import { todayString, yesterdayString, isStreakAlive } from '@/lib/dates'
 import HomeClient from '@/components/tasks/HomeClient'
 import BottomNav from '@/components/layout/BottomNav'
 import type { Profile, Task, TaskWithStatus } from '@/types'
@@ -21,10 +21,47 @@ export default async function HomePage() {
 
   if (!profile) redirect('/auth/login')
 
-  // Reset streak if user missed yesterday
+  // Streak was broken since last visit -- try to auto-consume a Streak Freeze
+  // before giving up and resetting to 0.
+  let streakFrozen = false
   if (profile.last_completed_date && !isStreakAlive(profile.last_completed_date)) {
-    await supabase.from('profiles').update({ streak: 0 }).eq('user_id', user.id)
-    profile.streak = 0
+    let freezeConsumed = false
+
+    if (profile.streak > 0) {
+      const { data: freezeItem } = await supabase
+        .from('shop_items')
+        .select('id')
+        .eq('type', 'streak_shield')
+        .maybeSingle()
+
+      if (freezeItem) {
+        const { data: inv } = await supabase
+          .from('inventory')
+          .select('id, quantity')
+          .eq('user_id', user.id)
+          .eq('shop_item_id', freezeItem.id)
+          .gt('quantity', 0)
+          .maybeSingle()
+
+        if (inv) {
+          if (inv.quantity > 1) {
+            await supabase.from('inventory').update({ quantity: inv.quantity - 1 }).eq('id', inv.id)
+          } else {
+            await supabase.from('inventory').delete().eq('id', inv.id)
+          }
+          const bridged = yesterdayString()
+          await supabase.from('profiles').update({ last_completed_date: bridged }).eq('user_id', user.id)
+          profile.last_completed_date = bridged
+          freezeConsumed = true
+          streakFrozen = true
+        }
+      }
+    }
+
+    if (!freezeConsumed) {
+      await supabase.from('profiles').update({ streak: 0 }).eq('user_id', user.id)
+      profile.streak = 0
+    }
   }
 
   // Fetch all active tasks
@@ -54,7 +91,7 @@ export default async function HomePage() {
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden" style={{ minHeight: '100dvh' }}>
-      <HomeClient profile={profile as Profile} initialTasks={tasksWithStatus} />
+      <HomeClient profile={profile as Profile} initialTasks={tasksWithStatus} streakFrozen={streakFrozen} />
       <BottomNav />
     </div>
   )

@@ -24,9 +24,17 @@ export default function TaskCard({ task, onComplete }: TaskCardProps) {
   return (
     <div
       onClick={handleTap}
-      className="flex items-center gap-3 rounded-2xl px-4 py-3 mb-2 cursor-pointer select-none active:scale-[0.99] transition-transform"
+      className="relative flex items-center gap-3 rounded-2xl px-4 py-3 mb-2 cursor-pointer select-none active:scale-[0.99] transition-transform"
       style={{ background: 'var(--surface)', border: '0.5px solid var(--border)' }}
     >
+      {checking && !task.readded && (
+        <span
+          className="gold-float absolute right-4 top-1/2 text-sm font-bold pointer-events-none"
+          style={{ color: 'var(--gold)' }}
+        >
+          +{task.gold_value}g
+        </span>
+      )}
       {/* Check bubble */}
       <div
         className="w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-all duration-200"

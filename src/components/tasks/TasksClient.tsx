@@ -3,19 +3,21 @@
 import { useState, useCallback } from 'react'
 import { Plus, Pencil, Trash2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
-import { CATEGORY_CONFIG } from '@/lib/constants'
+import { CATEGORY_CONFIG, FREE_TASK_LIMIT, taskCreationCost } from '@/lib/constants'
+import { useCountUp } from '@/lib/useCountUp'
 import TaskSheet from '@/components/tasks/TaskSheet'
-import type { Task, Category } from '@/types'
+import { createTaskAction } from '@/app/tasks/actions'
+import type { Task, Category, Profile } from '@/types'
 
 type Filter = 'all' | 'habits' | 'oneoffs'
 type TaskData = Omit<Task, 'id' | 'user_id' | 'created_at'>
 
 interface TasksClientProps {
   initialTasks: Task[]
-  userId: string
+  profile: Profile
 }
 
-export default function TasksClient({ initialTasks, userId }: TasksClientProps) {
+export default function TasksClient({ initialTasks, profile }: TasksClientProps) {
   const supabase = createClient()
 
   const [tasks, setTasks] = useState<Task[]>(initialTasks)
@@ -23,6 +25,14 @@ export default function TasksClient({ initialTasks, userId }: TasksClientProps) 
   // undefined = sheet closed, null = new task, Task = editing
   const [sheetTask, setSheetTask] = useState<Task | null | undefined>(undefined)
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [gold, setGold] = useState(profile.gold)
+  const displayGold = useCountUp(gold)
+  const [paidTaskCount, setPaidTaskCount] = useState(profile.paid_task_count)
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+
+  const nextTaskCost = tasks.length < FREE_TASK_LIMIT ? 0 : taskCreationCost(paidTaskCount)
+  const freeRemaining = Math.max(0, FREE_TASK_LIMIT - tasks.length)
 
   const filtered = tasks.filter(t => {
     if (filter === 'habits') return t.is_recurring
@@ -32,28 +42,27 @@ export default function TasksClient({ initialTasks, userId }: TasksClientProps) 
 
   const handleSave = useCallback(async (data: TaskData) => {
     if (sheetTask === null) {
-      // Insert new task optimistically
-      const tempId = crypto.randomUUID()
-      const optimistic: Task = { id: tempId, user_id: userId, created_at: new Date().toISOString(), ...data }
-      setTasks(prev => [...prev, optimistic])
-      setSheetTask(undefined)
+      setSaving(true)
+      setSaveError(null)
+      const result = await createTaskAction(data)
+      setSaving(false)
 
-      const { data: inserted } = await supabase
-        .from('tasks')
-        .insert({ user_id: userId, ...data })
-        .select()
-        .single()
-
-      if (inserted) {
-        setTasks(prev => prev.map(t => t.id === tempId ? (inserted as Task) : t))
+      if ('error' in result) {
+        setSaveError(result.error)
+        return
       }
+
+      setTasks(prev => [...prev, result.task])
+      setGold(result.newGold)
+      if (result.goldSpent > 0) setPaidTaskCount(prev => prev + 1)
+      setSheetTask(undefined)
     } else if (sheetTask) {
       // Update existing task optimistically
       setTasks(prev => prev.map(t => t.id === sheetTask.id ? { ...t, ...data } : t))
       setSheetTask(undefined)
       await supabase.from('tasks').update(data).eq('id', sheetTask.id)
     }
-  }, [sheetTask, supabase, userId])
+  }, [sheetTask, supabase])
 
   const handleDeleteTap = useCallback(async (id: string) => {
     if (deletingId !== id) {
@@ -72,16 +81,36 @@ export default function TasksClient({ initialTasks, userId }: TasksClientProps) 
     <div className="flex flex-col flex-1 overflow-hidden relative">
 
       {/* HEADER */}
-      <div className="flex items-center justify-between px-5 pt-5 pb-3 flex-shrink-0">
+      <div className="flex items-center justify-between px-5 pt-5 pb-1 flex-shrink-0">
         <h1 className="text-base font-semibold" style={{ color: 'var(--text)' }}>My Tasks</h1>
-        <button
-          onClick={() => setSheetTask(null)}
-          className="w-8 h-8 rounded-full flex items-center justify-center"
-          style={{ background: 'var(--gold)' }}
-          aria-label="Add task"
-        >
-          <Plus size={16} strokeWidth={2.5} style={{ color: '#1a0f00' }} />
-        </button>
+        <div className="flex items-center gap-2">
+          <div
+            className="flex items-center gap-1.5 rounded-full px-2.5 py-1"
+            style={{ background: 'var(--surface)', border: '0.5px solid var(--border2)' }}
+          >
+            <div
+              className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold flex-shrink-0"
+              style={{ background: 'var(--gold)', color: '#1a0f00' }}
+            >G</div>
+            <span className="text-xs font-medium" style={{ color: 'var(--gold)' }}>{displayGold}</span>
+          </div>
+          <button
+            onClick={() => { setSaveError(null); setSheetTask(null) }}
+            className="w-8 h-8 rounded-full flex items-center justify-center"
+            style={{ background: 'var(--gold)' }}
+            aria-label="Add task"
+          >
+            <Plus size={16} strokeWidth={2.5} style={{ color: '#1a0f00' }} />
+          </button>
+        </div>
+      </div>
+
+      <div className="px-5 pb-3 flex-shrink-0">
+        <p className="text-[11px]" style={{ color: 'var(--text2)' }}>
+          {nextTaskCost === 0
+            ? `${freeRemaining} free task${freeRemaining === 1 ? '' : 's'} left`
+            : `Next new task costs ${nextTaskCost}g`}
+        </p>
       </div>
 
       {/* FILTER TABS */}
@@ -197,6 +226,9 @@ export default function TasksClient({ initialTasks, userId }: TasksClientProps) 
           task={sheetTask ?? undefined}
           onSave={handleSave}
           onClose={() => setSheetTask(undefined)}
+          cost={sheetTask === null ? nextTaskCost : undefined}
+          saving={saving}
+          error={saveError}
         />
       )}
     </div>

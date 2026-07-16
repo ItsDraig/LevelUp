@@ -11,16 +11,19 @@ interface TaskSheetProps {
   task?: Task
   onSave: (data: TaskData) => void
   onClose: () => void
+  cost?: number // only set when creating a new task; 0 = free
+  saving?: boolean
+  error?: string | null
 }
 
-export default function TaskSheet({ task, onSave, onClose }: TaskSheetProps) {
+export default function TaskSheet({ task, onSave, onClose, cost, saving, error }: TaskSheetProps) {
   const [name, setName] = useState(task?.name ?? '')
   const [category, setCategory] = useState<Category>(task?.category ?? 'Mind')
   const [difficulty, setDifficulty] = useState<Difficulty>(task?.difficulty ?? 'Medium')
   const [isRecurring, setIsRecurring] = useState(task?.is_recurring ?? true)
 
   const goldValue = DIFFICULTY_GOLD[difficulty]
-  const canSave = name.trim().length > 0
+  const canSave = name.trim().length > 0 && !saving
 
   function handleSave() {
     if (!canSave) return
@@ -170,6 +173,26 @@ export default function TaskSheet({ task, onSave, onClose }: TaskSheetProps) {
           </div>
         </div>
 
+        {/* Cost (new tasks only) */}
+        {cost !== undefined && (
+          <div
+            className="flex items-center justify-between rounded-xl px-4 py-2.5"
+            style={{ background: 'var(--surface2)', border: '0.5px solid var(--border)' }}
+          >
+            <span className="text-[11px]" style={{ color: 'var(--text2)' }}>
+              {cost === 0 ? 'Free task slot' : 'Cost to add this task'}
+            </span>
+            <span className="text-xs font-medium" style={{ color: cost === 0 ? 'var(--cat-wellness)' : 'var(--gold)' }}>
+              {cost === 0 ? 'Free' : `${cost}g`}
+            </span>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <p className="text-[11px] text-center" style={{ color: '#ff6060' }}>{error}</p>
+        )}
+
         {/* Save */}
         <button
           onClick={handleSave}
@@ -181,7 +204,7 @@ export default function TaskSheet({ task, onSave, onClose }: TaskSheetProps) {
             opacity: canSave ? 1 : 0.5,
           }}
         >
-          {task ? 'Save changes' : 'Add task'}
+          {saving ? 'Adding…' : task ? 'Save changes' : 'Add task'}
         </button>
       </div>
     </>

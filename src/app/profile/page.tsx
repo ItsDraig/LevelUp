@@ -1,11 +1,11 @@
 import { redirect } from 'next/navigation'
-import { Trophy, LogOut } from 'lucide-react'
+import { Trophy, LogOut, Sword } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { signOutAction } from './actions'
 import Hero from '@/components/hero/Hero'
 import BottomNav from '@/components/layout/BottomNav'
-import { CATEGORY_CONFIG } from '@/lib/constants'
-import type { Profile } from '@/types'
+import { CATEGORY_CONFIG, STAT_LABELS } from '@/lib/constants'
+import type { Profile, ShopItem, StatKey } from '@/types'
 
 export default async function ProfilePage() {
   const supabase = await createClient()
@@ -21,6 +21,16 @@ export default async function ProfilePage() {
   if (!profile) redirect('/auth/login')
 
   const p = profile as Profile
+
+  let equippedWeapon: ShopItem | null = null
+  if (p.equipped_weapon_id) {
+    const { data: weapon } = await supabase
+      .from('shop_items')
+      .select('*')
+      .eq('id', p.equipped_weapon_id)
+      .maybeSingle()
+    equippedWeapon = (weapon as ShopItem) ?? null
+  }
 
   const memberSince = new Date(p.created_at).toLocaleDateString('en-US', {
     month: 'long',
@@ -105,6 +115,50 @@ export default async function ProfilePage() {
               </div>
             ))}
           </div>
+        </div>
+
+        {/* EQUIPPED WEAPON */}
+        <div className="px-5 pb-4">
+          <p className="text-[10px] font-medium tracking-widest uppercase mb-2.5" style={{ color: 'var(--text2)' }}>
+            Weapon
+          </p>
+          {equippedWeapon ? (
+            <div
+              className="flex items-center gap-3 rounded-xl px-4 py-3"
+              style={{ background: 'var(--surface)', border: '0.5px solid var(--border2)' }}
+            >
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                style={{ background: 'var(--surface2)' }}
+              >
+                <Sword size={17} style={{ color: 'var(--gold)' }} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium" style={{ color: 'var(--text)' }}>{equippedWeapon.name}</p>
+                <p className="text-[11px]" style={{ color: 'var(--text2)' }}>
+                  {equippedWeapon.combat_power ? `${equippedWeapon.combat_power} power` : ''}
+                  {equippedWeapon.required_stat
+                    ? ` · Requires ${equippedWeapon.required_stat_value ?? 0} ${STAT_LABELS[equippedWeapon.required_stat as StatKey]}`
+                    : ''}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div
+              className="flex items-center gap-3 rounded-xl px-4 py-3"
+              style={{ background: 'var(--surface)', border: '0.5px solid var(--border)' }}
+            >
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0"
+                style={{ background: 'var(--surface2)' }}
+              >
+                <Sword size={17} style={{ color: 'var(--text2)' }} />
+              </div>
+              <p className="text-[11px]" style={{ color: 'var(--text2)' }}>
+                No weapon equipped. Visit the Shop to gear up.
+              </p>
+            </div>
+          )}
         </div>
 
         <div className="flex-1" />

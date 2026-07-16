@@ -32,3 +32,14 @@ body {
 .pill-wellness { background: #0E2620; color: #5DCAA5; }
 .pill-career   { background: #0E1E2E; color: #85B7EB; }
 .pill-basic    { background: #1E1E1C; color: #888780; }
+
+/* Floating "+Xg" popup on task completion */
+@keyframes gold-float-up {
+  0%   { opacity: 0; transform: translateY(0) scale(0.8); }
+  15%  { opacity: 1; transform: translateY(-4px) scale(1.08); }
+  100% { opacity: 0; transform: translateY(-32px) scale(1); }
+}
+
+.gold-float {
+  animation: gold-float-up 600ms ease-out forwards;
+}
