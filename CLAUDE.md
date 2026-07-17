@@ -16,10 +16,18 @@
   instead of jumping; `TaskCard.tsx` shows a floating "+Xg" popup
   (`.gold-float` keyframe in `globals.css`) timed to the existing 600ms
   tap-to-complete delay.
+- Double Gold Day (`task_modifier` shop item) is now wired up: buying it adds
+  to inventory as before, but an explicit "Activate" button in
+  `ShopClient.tsx` (`activateDoubleGoldAction` in `src/app/shop/actions.ts`)
+  consumes one and stamps `profiles.double_gold_date` with today's date
+  (new column, migration appended to `supabase/schema.sql` — **needs to be
+  run in the Supabase SQL editor**, see DB workflow gotcha below). `home/page.tsx`
+  computes `doubleGoldActive` from that column and passes it down through
+  `HomeClient` → `TaskCard`, doubling `gold_value` wherever gold is shown,
+  earned, or undone. Effect is date-based so it naturally expires — no reset
+  job needed.
 
 ## Not yet done / known gaps
-- `task_modifier` shop item ("Double Gold Day") is purchasable but not wired
-  to any actual gold-doubling logic — pre-existing gap, not addressed.
 - `/battle` is still a stub. Weapons carry a `combat_power` field for this,
   but no combat loop exists yet.
 - `src/middleware.ts` still uses the pre-Next-16 convention name; Next 16

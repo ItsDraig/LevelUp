@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import TasksClient from '@/components/tasks/TasksClient'
-import BottomNav from '@/components/layout/BottomNav'
 import type { Profile, Task } from '@/types'
 
 export default async function TasksPage() {
@@ -23,9 +22,8 @@ export default async function TasksPage() {
     .order('created_at', { ascending: true })
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden" style={{ minHeight: '100dvh' }}>
+    <div className="flex flex-col flex-1 overflow-hidden">
       <TasksClient initialTasks={(tasks ?? []) as Task[]} profile={profile as Profile} />
-      <BottomNav />
     </div>
   )
 }

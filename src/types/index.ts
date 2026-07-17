@@ -18,6 +18,7 @@ export interface Profile {
   stat_career: number
   paid_task_count: number
   equipped_weapon_id: string | null
+  double_gold_date: string | null // YYYY-MM-DD -- gold-doubling active for this date
   created_at: string
 }
 

@@ -26,6 +26,40 @@ body {
   font-family: var(--font-inter), sans-serif;
 }
 
+/* Scrollbars: no visible track, a faintly-visible draggable thumb.
+   Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.16) transparent;
+}
+
+/* Chromium/WebKit */
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.16);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.28);
+}
+
+/* Touch devices: rely on the native auto-hiding overlay scrollbar
+   instead of showing a persistent one. */
+@media (pointer: coarse) {
+  * {
+    scrollbar-width: none;
+  }
+  *::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* Category pills */
 .pill-mind     { background: #1E1C3A; color: #AFA9EC; }
 .pill-body     { background: #2A1510; color: #F0997B; }

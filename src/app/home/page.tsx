@@ -2,7 +2,6 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { todayString, yesterdayString, isStreakAlive } from '@/lib/dates'
 import HomeClient from '@/components/tasks/HomeClient'
-import BottomNav from '@/components/layout/BottomNav'
 import type { Profile, Task, TaskWithStatus } from '@/types'
 
 export default async function HomePage() {
@@ -89,10 +88,16 @@ export default async function HomePage() {
       readded: false,
     }))
 
+  const doubleGoldActive = profile.double_gold_date === today
+
   return (
-    <div className="flex flex-col flex-1 overflow-hidden" style={{ minHeight: '100dvh' }}>
-      <HomeClient profile={profile as Profile} initialTasks={tasksWithStatus} streakFrozen={streakFrozen} />
-      <BottomNav />
+    <div className="flex flex-col flex-1 overflow-hidden">
+      <HomeClient
+        profile={profile as Profile}
+        initialTasks={tasksWithStatus}
+        streakFrozen={streakFrozen}
+        doubleGoldActive={doubleGoldActive}
+      />
     </div>
   )
 }

@@ -3,7 +3,6 @@ import { Trophy, LogOut, Sword } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { signOutAction } from './actions'
 import Hero from '@/components/hero/Hero'
-import BottomNav from '@/components/layout/BottomNav'
 import { CATEGORY_CONFIG, STAT_LABELS } from '@/lib/constants'
 import type { Profile, ShopItem, StatKey } from '@/types'
 
@@ -45,7 +44,7 @@ export default async function ProfilePage() {
   ].map(s => ({ ...s, ...CATEGORY_CONFIG[s.category] }))
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden" style={{ minHeight: '100dvh' }}>
+    <div className="flex flex-col flex-1 overflow-hidden">
       <div className="flex flex-col flex-1 overflow-y-auto">
 
         {/* HEADER */}
@@ -177,8 +176,6 @@ export default async function ProfilePage() {
           </form>
         </div>
       </div>
-
-      <BottomNav />
     </div>
   )
 }

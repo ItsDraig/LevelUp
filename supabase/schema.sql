@@ -199,3 +199,12 @@ select * from (values
   ('Arcane Staff',  'Channels focused willpower into raw force.',        'weapon', 350, 'wand',  'stat_mind'::text, 8,  24)
 ) as w(name, description, type, cost, icon, required_stat, required_stat_value, combat_power)
 where not exists (select 1 from public.shop_items where type = 'weapon');
+
+-- ============================================================
+-- Migration: Double Gold Day activation
+-- Safe to re-run; guards on existence before altering.
+-- Tracks which date (if any) a user has an active gold-doubling
+-- effect running, so task completions on that date can be doubled.
+-- ============================================================
+
+alter table public.profiles add column if not exists double_gold_date date default null;

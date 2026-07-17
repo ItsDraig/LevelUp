@@ -7,9 +7,10 @@ import { TaskWithStatus } from '@/types'
 interface TaskCardProps {
   task: TaskWithStatus
   onComplete: (task: TaskWithStatus) => void
+  goldMultiplier?: number
 }
 
-export default function TaskCard({ task, onComplete }: TaskCardProps) {
+export default function TaskCard({ task, onComplete, goldMultiplier = 1 }: TaskCardProps) {
   const [checking, setChecking] = useState(false)
 
   function handleTap() {
@@ -18,7 +19,8 @@ export default function TaskCard({ task, onComplete }: TaskCardProps) {
     setTimeout(() => onComplete(task), 600)
   }
 
-  const goldLabel = task.readded ? '+0g' : `+${task.gold_value}g`
+  const goldValue = task.gold_value * goldMultiplier
+  const goldLabel = task.readded ? '+0g' : `+${goldValue}g`
   const goldColor = task.readded ? 'var(--text2)' : 'var(--gold)'
 
   return (
@@ -32,7 +34,7 @@ export default function TaskCard({ task, onComplete }: TaskCardProps) {
           className="gold-float absolute right-4 top-1/2 text-sm font-bold pointer-events-none"
           style={{ color: 'var(--gold)' }}
         >
-          +{task.gold_value}g
+          +{goldValue}g
         </span>
       )}
       {/* Check bubble */}

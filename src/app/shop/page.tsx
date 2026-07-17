@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import ShopClient from '@/components/shop/ShopClient'
-import BottomNav from '@/components/layout/BottomNav'
 import type { Profile, ShopItem, InventoryItem } from '@/types'
 
 export default async function ShopPage() {
@@ -27,13 +26,12 @@ export default async function ShopPage() {
     .eq('user_id', user.id)
 
   return (
-    <div className="flex flex-col flex-1 overflow-hidden" style={{ minHeight: '100dvh' }}>
+    <div className="flex flex-col flex-1 overflow-hidden">
       <ShopClient
         profile={profile as Profile}
         items={(items ?? []) as ShopItem[]}
         inventory={(inventory ?? []) as InventoryItem[]}
       />
-      <BottomNav />
     </div>
   )
 }

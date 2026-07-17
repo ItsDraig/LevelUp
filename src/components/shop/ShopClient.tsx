@@ -7,7 +7,8 @@ import {
 } from 'lucide-react'
 import { STAT_LABELS } from '@/lib/constants'
 import { useCountUp } from '@/lib/useCountUp'
-import { purchaseItemAction, equipWeaponAction, unequipWeaponAction } from '@/app/shop/actions'
+import { todayString } from '@/lib/dates'
+import { purchaseItemAction, equipWeaponAction, unequipWeaponAction, activateDoubleGoldAction } from '@/app/shop/actions'
 import type { Profile, ShopItem, InventoryItem, StatKey } from '@/types'
 
 const ICONS: Record<string, LucideIcon> = {
@@ -37,8 +38,10 @@ export default function ShopClient({ profile, items, inventory }: ShopClientProp
     return m
   })
   const [equippedId, setEquippedId] = useState<string | null>(profile.equipped_weapon_id)
+  const [doubleGoldDate, setDoubleGoldDate] = useState<string | null>(profile.double_gold_date)
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const doubleGoldActiveToday = doubleGoldDate === todayString()
 
   async function handleBuy(item: ShopItem) {
     if (pendingId) return
@@ -67,6 +70,20 @@ export default function ShopClient({ profile, items, inventory }: ShopClientProp
     setEquippedId(item.id)
   }
 
+  async function handleActivateDoubleGold(item: ShopItem) {
+    if (pendingId) return
+    setPendingId(item.id)
+    setMessage(null)
+    const result = await activateDoubleGoldAction()
+    setPendingId(null)
+    if ('error' in result) {
+      setMessage(result.error)
+      return
+    }
+    setOwned(prev => ({ ...prev, [item.id]: Math.max(0, (prev[item.id] ?? 0) - 1) }))
+    setDoubleGoldDate(result.date)
+  }
+
   async function handleUnequip() {
     if (pendingId) return
     setPendingId(equippedId)
@@ -92,6 +109,7 @@ export default function ShopClient({ profile, items, inventory }: ShopClientProp
     const Icon = ICONS[item.icon] ?? Coins
     const qty = owned[item.id] ?? 0
     const isWeapon = item.type === 'weapon'
+    const isModifier = item.type === 'task_modifier'
     const isEquipped = isWeapon && equippedId === item.id
     const meetsReq = meetsRequirement(item)
     const isPending = pendingId === item.id
@@ -126,6 +144,12 @@ export default function ShopClient({ profile, items, inventory }: ShopClientProp
             </div>
             <p className="text-[11px] mt-0.5" style={{ color: 'var(--text2)' }}>{item.description}</p>
 
+            {isModifier && doubleGoldActiveToday && (
+              <p className="text-[10px] mt-1 flex items-center gap-1" style={{ color: 'var(--cat-wellness)' }}>
+                <Check size={11} /> Active today
+              </p>
+            )}
+
             {isWeapon && (
               <p className="text-[10px] mt-1" style={{ color: meetsReq ? 'var(--cat-wellness)' : '#ff6060' }}>
                 Requires {item.required_stat_value ?? 0} {STAT_LABELS[item.required_stat as StatKey]}
@@ -154,6 +178,21 @@ export default function ShopClient({ profile, items, inventory }: ShopClientProp
                   }}
                 >
                   {isPending ? '...' : 'Buy'}
+                </button>
+              )}
+
+              {qty > 0 && isModifier && !doubleGoldActiveToday && (
+                <button
+                  onClick={() => handleActivateDoubleGold(item)}
+                  disabled={isPending}
+                  className="text-[11px] font-semibold px-3 py-1.5 rounded-full"
+                  style={{
+                    background: 'var(--gold)',
+                    color: '#1a0f00',
+                    opacity: isPending ? 0.6 : 1,
+                  }}
+                >
+                  {isPending ? '...' : 'Activate'}
                 </button>
               )}
 

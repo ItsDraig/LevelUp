@@ -15,9 +15,11 @@ interface HomeClientProps {
   profile: Profile
   initialTasks: TaskWithStatus[]
   streakFrozen?: boolean
+  doubleGoldActive?: boolean
 }
 
-export default function HomeClient({ profile, initialTasks, streakFrozen }: HomeClientProps) {
+export default function HomeClient({ profile, initialTasks, streakFrozen, doubleGoldActive }: HomeClientProps) {
+  const goldMultiplier = doubleGoldActive ? 2 : 1
   const supabase = createClient()
 
   const [gold, setGold] = useState(profile.gold)
@@ -63,7 +65,7 @@ export default function HomeClient({ profile, initialTasks, streakFrozen }: Home
   }, [freezeToast])
 
   const handleComplete = useCallback(async (task: TaskWithStatus) => {
-    const goldEarned = task.readded ? 0 : task.gold_value
+    const goldEarned = task.readded ? 0 : task.gold_value * goldMultiplier
     const today = todayString()
 
     // Optimistically update UI
@@ -121,22 +123,23 @@ export default function HomeClient({ profile, initialTasks, streakFrozen }: Home
       }
       return prev
     })
-  }, [gold, profile, streak, supabase, dayAlreadyCompleted])
+  }, [gold, profile, streak, supabase, dayAlreadyCompleted, goldMultiplier])
 
   const handleUndo = useCallback(async (task: TaskWithStatus) => {
     const today = todayString()
+    const goldToReverse = task.gold_value * goldMultiplier
 
     setCompletedTasks(prev => prev.filter(t => t.id !== task.id))
     setActiveTasks(prev => [...prev, { ...task, completedToday: false, readded: true }])
 
     // Reverse gold if it was awarded
     if (!task.readded) {
-      setGold(prev => prev - task.gold_value)
+      setGold(prev => prev - goldToReverse)
       setSessionGains(prev => ({
         ...prev,
-        [task.category]: Math.max(0, (prev[task.category] ?? 0) - task.gold_value),
+        [task.category]: Math.max(0, (prev[task.category] ?? 0) - goldToReverse),
       }))
-      await supabase.from('profiles').update({ gold: gold - task.gold_value }).eq('user_id', profile.user_id)
+      await supabase.from('profiles').update({ gold: gold - goldToReverse }).eq('user_id', profile.user_id)
     }
 
     // Remove the completion record
@@ -144,7 +147,7 @@ export default function HomeClient({ profile, initialTasks, streakFrozen }: Home
       .delete()
       .eq('task_id', task.id)
       .eq('completed_date', today)
-  }, [gold, profile.user_id, supabase])
+  }, [gold, profile.user_id, supabase, goldMultiplier])
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden relative">
@@ -165,6 +168,12 @@ export default function HomeClient({ profile, initialTasks, streakFrozen }: Home
         </div>
 
         <div className="flex items-center gap-1.5" style={{ color: 'var(--gold)' }}>
+          {doubleGoldActive && (
+            <span
+              className="text-[9px] font-bold px-1.5 py-0.5 rounded-full leading-none"
+              style={{ background: 'var(--gold)', color: '#1a0f00' }}
+            >2×</span>
+          )}
           <div
             className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold"
             style={{ background: 'var(--gold)', color: '#1a0f00' }}
@@ -194,7 +203,7 @@ export default function HomeClient({ profile, initialTasks, streakFrozen }: Home
         )}
 
         {activeTasks.map(task => (
-          <TaskCard key={task.id} task={task} onComplete={handleComplete} />
+          <TaskCard key={task.id} task={task} onComplete={handleComplete} goldMultiplier={goldMultiplier} />
         ))}
 
         {/* COMPLETED SECTION */}

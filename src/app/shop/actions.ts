@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { STAT_LABELS } from '@/lib/constants'
+import { todayString } from '@/lib/dates'
 import type { ShopItem, StatKey } from '@/types'
 
 export type ActionResult<T extends object = object> = { error: string } | ({ success: true } & T)
@@ -100,6 +101,49 @@ export async function equipWeaponAction(shopItemId: string): Promise<ActionResul
   revalidatePath('/shop')
   revalidatePath('/profile')
   return { success: true }
+}
+
+export async function activateDoubleGoldAction(): Promise<ActionResult<{ date: string }>> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated.' }
+
+  const { data: item } = await supabase
+    .from('shop_items')
+    .select('id')
+    .eq('type', 'task_modifier')
+    .maybeSingle()
+  if (!item) return { error: 'Item not found.' }
+
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('double_gold_date')
+    .eq('user_id', user.id)
+    .single()
+  if (!profile) return { error: 'Profile not found.' }
+
+  const today = todayString()
+  if (profile.double_gold_date === today) return { error: 'Already active today.' }
+
+  const { data: owned } = await supabase
+    .from('inventory')
+    .select('id, quantity')
+    .eq('user_id', user.id)
+    .eq('shop_item_id', item.id)
+    .maybeSingle()
+  if (!owned || owned.quantity < 1) return { error: 'You do not own this.' }
+
+  if (owned.quantity > 1) {
+    await supabase.from('inventory').update({ quantity: owned.quantity - 1 }).eq('id', owned.id)
+  } else {
+    await supabase.from('inventory').delete().eq('id', owned.id)
+  }
+
+  await supabase.from('profiles').update({ double_gold_date: today }).eq('user_id', user.id)
+
+  revalidatePath('/shop')
+  revalidatePath('/home')
+  return { success: true, date: today }
 }
 
 export async function unequipWeaponAction(): Promise<ActionResult> {
