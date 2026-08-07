@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { ChevronDown, ChevronUp, Check, Snowflake } from 'lucide-react'
 import Hero from '@/components/hero/Hero'
+import TimeOfDayBackdrop from '@/components/home/TimeOfDayBackdrop'
 import TaskCard from '@/components/tasks/TaskCard'
 import CompletedTaskCard from '@/components/tasks/CompletedTaskCard'
 import { createClient } from '@/lib/supabase/client'
@@ -151,6 +152,8 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden relative">
+
+      <TimeOfDayBackdrop />
 
       {/* TOP BAR */}
       <div className="flex items-center justify-between px-5 pt-5 pb-2 flex-shrink-0">
