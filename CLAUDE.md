@@ -27,12 +27,40 @@
   earned, or undone. Effect is date-based so it naturally expires — no reset
   job needed.
 
+## PWA / installable app (set up, not yet hosted)
+- Goal is eventually a real iOS App Store app. Interim step is an installable
+  PWA: `src/app/manifest.ts` (`display: standalone`), `appleWebApp` +
+  `viewport` exports in `src/app/layout.tsx`, and placeholder pixel-art icons
+  (`public/icon-192.png`, `public/icon-512.png`, `src/app/apple-icon.png`).
+- **Icons are placeholders** — a gold "level up" arrow generated
+  programmatically. Redesign them as part of the retro RPG theming pass.
+- `viewportFit: 'cover'` is what makes `env(safe-area-inset-*)` report
+  non-zero. `BottomNav.tsx` already pads the bottom; `layout.tsx` pads the top
+  because `statusBarStyle: 'black-translucent'` runs content under the notch.
+  Removing `viewportFit` silently breaks both.
+- `manifest.webmanifest` **must stay in the proxy matcher's exclusion list**
+  (`src/proxy.ts`). Browsers fetch the manifest without credentials, so gating
+  it behind the auth check redirects it to `/auth/login` and install silently
+  fails. This bug was hit and fixed once already.
+- Install requires **HTTPS** — the LAN URL (`http://10.0.0.100:3000`) cannot be
+  added to a home screen. Needs hosting (Vercel) first. `next.config.ts` has
+  `allowedDevOrigins` set to the LAN IP for phone testing over plain HTTP;
+  that IP is DHCP-assigned and will need updating if it changes.
+- Migrating to a bundled-offline native app (static export + Capacitor) is
+  blocked by Server Actions, cookies, and proxy — all unsupported under
+  `output: 'export'`. Deliberately deferred; see the note on RPCs below.
+- When building `/battle`, put gold/XP/level writes in Postgres
+  `security definer` RPCs rather than Server Actions. The profiles update
+  policy (`supabase/schema.sql:103`) is row-scoped with no `with check`, so
+  the anon key can already write `gold` directly from the browser. RPCs fix
+  that *and* are a prerequisite for the static-export path.
+
 ## Not yet done / known gaps
 - `/battle` is still a stub. Weapons carry a `combat_power` field for this,
   but no combat loop exists yet.
-- `src/middleware.ts` still uses the pre-Next-16 convention name; Next 16
-  renamed this to `proxy.ts`. Works today but is a deprecation notice worth
-  clearing if this file is touched again.
+- Build warns that Turbopack inferred the workspace root from a stray
+  `C:\Users\Oliver\package-lock.json`. Harmless so far; fix by setting
+  `turbopack.root` in `next.config.ts` or deleting the stray lockfile.
 
 ## DB workflow gotcha
 - `supabase/schema.sql` is a single hand-maintained file, not a migrations

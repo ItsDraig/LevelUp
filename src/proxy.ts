@@ -42,5 +42,11 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)'],
+  // `manifest.webmanifest` must stay public: browsers fetch it without
+  // credentials, so gating it behind the auth check redirects it to /auth/login
+  // and the PWA install prompt never appears. Icons are already covered by the
+  // image-extension exclusion below.
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
 }
