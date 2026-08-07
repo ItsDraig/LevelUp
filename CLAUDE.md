@@ -62,6 +62,13 @@
   `C:\Users\Oliver\package-lock.json`. Harmless so far; fix by setting
   `turbopack.root` in `next.config.ts` or deleting the stray lockfile.
 
+## Test account
+- Credentials for a throwaway test user live in `.env.local` as
+  `TEST_USER_EMAIL` / `TEST_USER_PASSWORD`. Use them to log in and check UI
+  work that sits behind auth (`/home`, `/tasks`, `/shop`, `/profile`).
+- **Never move these into this file.** CLAUDE.md is committed and
+  `github.com/ItsDraig/LevelUp` is a public repo. `.env*` is gitignored.
+
 ## DB workflow gotcha
 - `supabase/schema.sql` is a single hand-maintained file, not a migrations
   folder — new schema changes get appended to the bottom as a guarded
