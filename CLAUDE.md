@@ -62,6 +62,30 @@
   `battleReducer.ts` with `tsc --outDir` and requiring them from plain node --
   both files are React-free precisely so this works.
 
+## Persistent HP + regeneration (implemented, DB migration NOT yet applied)
+- HP no longer resets between fights. `profiles.current_hp` stores it and
+  `profiles.hp_updated_at` is an *anchor*: regeneration is derived from elapsed
+  time on read (`regeneratedHp()` in `src/lib/battle.ts`), so there is no cron
+  to run and someone away for a week is simply at full.
+- Rate is `HP_REGEN_FRACTION_PER_HOUR` = 10% of max per hour, so empty to full
+  is always 10 hours. Note the maxHp terms cancel in `minutesToFullHeal()` --
+  a bigger pool heals faster in absolute HP, not in wall-clock time.
+- **Never persist the output of `regeneratedHp()` without also writing a fresh
+  `hp_updated_at`.** The anchor is what makes partial progress survive reads;
+  writing the regenerated value while leaving the old anchor would double-count.
+- `hp_max(level, wellness)` exists in SQL as well as in `derivePlayerStats()`,
+  because `resolve_battle` has to clamp a client-reported HP and a clamp that
+  trusted the client for its own bound would not be a clamp. Third mirrored
+  formula in this codebase after the XP curve -- keep them in step.
+- Fleeing calls the separate `sync_hp` RPC. Without it, taking damage and
+  walking away would be a free full heal. `sync_hp` only ever writes HP
+  *downward*, so it cannot be used to top up.
+- Closing the tab mid-fight still discards that fight's damage. Accepted --
+  the alternative is heartbeat writes on every tick.
+- Defeat forces HP to 0 server-side regardless of what the client reports, so
+  losing now costs a 10-hour rest. That is a real difficulty change: losses
+  used to be free.
+
 ## PWA / installable app (set up, not yet hosted)
 - Goal is eventually a real iOS App Store app. Interim step is an installable
   PWA: `src/app/manifest.ts` (`display: standalone`), `appleWebApp` +

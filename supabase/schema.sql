@@ -378,3 +378,191 @@ $$;
 
 revoke all    on function public.resolve_battle(text, boolean) from public;
 grant  execute on function public.resolve_battle(text, boolean) to authenticated;
+
+-- ============================================================
+-- Migration: persistent HP with hourly regeneration
+-- Safe to re-run; guards on existence before altering.
+--
+-- HP no longer resets between fights. It is stored, and regenerates
+-- HP_REGEN_FRACTION_PER_HOUR (10%) of max per hour. Rather than running a
+-- cron to tick it up, `hp_updated_at` is an anchor: elapsed time since it is
+-- converted to healing on read. Nothing needs to be scheduled, and a user
+-- who is away for a week is simply at full.
+-- ============================================================
+
+alter table public.profiles add column if not exists current_hp integer;
+alter table public.profiles add column if not exists hp_updated_at timestamptz not null default now();
+
+-- Max HP as a function of level and wellness.
+--
+-- MIRRORED in derivePlayerStats() in src/lib/battle.ts. It lives here too
+-- because resolve_battle has to clamp a client-supplied HP value, and a clamp
+-- that trusted the client for its own bound would not be a clamp.
+create or replace function public.hp_max(p_level integer, p_wellness integer)
+returns integer
+language sql
+immutable
+set search_path = public
+as $$
+  select 60 + (greatest(coalesce(p_level, 1), 1) - 1) * 12 + greatest(coalesce(p_wellness, 0), 0) * 4;
+$$;
+
+-- Existing profiles start at full rather than at zero.
+update public.profiles
+   set current_hp = public.hp_max(level, stat_wellness)
+ where current_hp is null;
+
+-- Write HP without logging a battle. Used when fleeing: without it, taking
+-- damage and then walking away would be a free full heal.
+create or replace function public.sync_hp(p_hp integer)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id  uuid := auth.uid();
+  v_profile  public.profiles%rowtype;
+  v_max_hp   integer;
+  v_clamped  integer;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.' using errcode = '28000';
+  end if;
+
+  select * into v_profile from public.profiles where user_id = v_user_id for update;
+  if not found then
+    raise exception 'Profile not found.' using errcode = 'P0002';
+  end if;
+
+  v_max_hp  := public.hp_max(v_profile.level, v_profile.stat_wellness);
+  v_clamped := greatest(0, least(coalesce(p_hp, v_max_hp), v_max_hp));
+
+  -- Only ever writes downward. Regeneration is time-based and derived on
+  -- read, so accepting an increase here would let a caller heal at will.
+  if v_clamped >= coalesce(v_profile.current_hp, v_max_hp) then
+    return json_build_object('current_hp', v_profile.current_hp, 'max_hp', v_max_hp, 'changed', false);
+  end if;
+
+  update public.profiles
+     set current_hp = v_clamped,
+         hp_updated_at = now()
+   where user_id = v_user_id;
+
+  return json_build_object('current_hp', v_clamped, 'max_hp', v_max_hp, 'changed', true);
+end;
+$$;
+
+revoke all     on function public.sync_hp(integer) from public;
+grant  execute on function public.sync_hp(integer) to authenticated;
+
+-- resolve_battle gains an ending-HP argument, so a fight's damage persists.
+-- The old two-argument version is dropped rather than left as an overload --
+-- an overload would silently keep working while never writing HP.
+drop function if exists public.resolve_battle(text, boolean);
+
+create or replace function public.resolve_battle(
+  p_enemy_key text,
+  p_victory   boolean,
+  p_ending_hp integer
+)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id       uuid := auth.uid();
+  v_enemy         public.enemies%rowtype;
+  v_profile       public.profiles%rowtype;
+  v_gold          integer := 0;
+  v_xp            integer := 0;
+  v_new_level     integer;
+  v_new_xp        integer;
+  v_levels_gained integer := 0;
+  v_need          integer;
+  v_last          timestamptz;
+  v_max_hp        integer;
+  v_ending_hp     integer;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.' using errcode = '28000';
+  end if;
+
+  select * into v_enemy from public.enemies where key = p_enemy_key;
+  if not found then
+    raise exception 'Unknown enemy: %', p_enemy_key using errcode = '22023';
+  end if;
+
+  select * into v_profile from public.profiles where user_id = v_user_id for update;
+  if not found then
+    raise exception 'Profile not found.' using errcode = 'P0002';
+  end if;
+
+  if v_profile.level < v_enemy.min_level then
+    raise exception 'Requires level %.', v_enemy.min_level using errcode = '22023';
+  end if;
+
+  -- The shortest winnable fight is ~20s. Anything faster is a script calling
+  -- the RPC directly, not someone playing.
+  select max(created_at) into v_last from public.battle_log where user_id = v_user_id;
+  if v_last is not null and v_last > now() - interval '10 seconds' then
+    raise exception 'Too soon since your last battle.' using errcode = '55000';
+  end if;
+
+  -- Clamp the client's reported HP against a bound computed here. A defeat is
+  -- always zero regardless of what the client claims.
+  v_max_hp := public.hp_max(v_profile.level, v_profile.stat_wellness);
+  if p_victory then
+    v_ending_hp := greatest(0, least(coalesce(p_ending_hp, 0), v_max_hp));
+  else
+    v_ending_hp := 0;
+  end if;
+
+  v_new_level := v_profile.level;
+  v_new_xp    := v_profile.xp;
+
+  if p_victory then
+    v_gold   := v_enemy.gold_reward;
+    v_xp     := v_enemy.xp_reward;
+    v_new_xp := v_new_xp + v_xp;
+
+    -- Loop, so one big win can carry across several levels.
+    loop
+      v_need := 100 + (v_new_level - 1) * 60;
+      exit when v_new_xp < v_need;
+      v_new_xp        := v_new_xp - v_need;
+      v_new_level     := v_new_level + 1;
+      v_levels_gained := v_levels_gained + 1;
+    end loop;
+  end if;
+
+  -- One update for both outcomes: gold/xp/level are unchanged on a loss
+  -- (the locals still hold their current values), but HP must persist either way.
+  update public.profiles
+     set gold          = gold + v_gold,
+         xp            = v_new_xp,
+         level         = v_new_level,
+         current_hp    = v_ending_hp,
+         hp_updated_at = now()
+   where user_id = v_user_id;
+
+  insert into public.battle_log (user_id, enemy_key, victory, gold_awarded, xp_awarded)
+  values (v_user_id, p_enemy_key, p_victory, v_gold, v_xp);
+
+  return json_build_object(
+    'gold_awarded',  v_gold,
+    'xp_awarded',    v_xp,
+    'gold',          v_profile.gold + v_gold,
+    'xp',            v_new_xp,
+    'level',         v_new_level,
+    'levels_gained', v_levels_gained,
+    'current_hp',    v_ending_hp,
+    -- Recomputed for the new level: a level-up raises the ceiling.
+    'max_hp',        public.hp_max(v_new_level, v_profile.stat_wellness)
+  );
+end;
+$$;
+
+revoke all     on function public.resolve_battle(text, boolean, integer) from public;
+grant  execute on function public.resolve_battle(text, boolean, integer) to authenticated;

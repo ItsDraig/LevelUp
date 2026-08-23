@@ -20,6 +20,8 @@ export interface Profile {
   equipped_weapon_id: string | null
   double_gold_date: string | null // YYYY-MM-DD -- gold-doubling active for this date
   xp: number // progress toward the next level; reset by the carry on level-up
+  current_hp: number | null // persists between battles; null on legacy rows => full
+  hp_updated_at: string | null // anchor that time-based regen accrues from
   created_at: string
 }
 
@@ -125,4 +127,6 @@ export interface BattleResult {
   xp: number
   level: number
   levels_gained: number
+  current_hp: number
+  max_hp: number
 }

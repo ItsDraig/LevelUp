@@ -42,7 +42,7 @@ export interface BattleState {
 }
 
 export type BattleEvent =
-  | { type: 'start'; enemy: Enemy; profile: Profile; weapon: ShopItem | null }
+  | { type: 'start'; enemy: Enemy; profile: Profile; weapon: ShopItem | null; startingHp: number }
   | { type: 'select'; action: PlayerAction }
   | { type: 'tick'; deltaMs: number; rng?: Rng }
   | { type: 'quit' }
@@ -84,7 +84,9 @@ export function battleReducer(state: BattleState, event: BattleEvent): BattleSta
         phase: 'fighting',
         enemy: event.enemy,
         stats,
-        playerHp: stats.maxHp,
+        // Carried over from the last fight, not reset -- resting is the only
+        // thing that heals.
+        playerHp: Math.max(0, Math.min(stats.maxHp, event.startingHp)),
         // Starting on a partial bar means the opening Magic needs earning.
         playerMana: Math.min(stats.maxMana, Math.round(stats.maxMana * 0.4)),
         enemyHp: event.enemy.max_hp,

@@ -15,7 +15,7 @@ const MAX_STEP_MS = 250
 
 export interface UseBattle {
   state: BattleState
-  start: (enemy: Enemy, profile: Profile, weapon: ShopItem | null) => void
+  start: (enemy: Enemy, profile: Profile, weapon: ShopItem | null, startingHp: number) => void
   select: (action: PlayerAction) => void
   quit: () => void
 }
@@ -42,9 +42,12 @@ export function useBattle(): UseBattle {
     // never needs to re-subscribe on state changes.
   }, [state.phase])
 
-  const start = useCallback((enemy: Enemy, profile: Profile, weapon: ShopItem | null) => {
-    dispatch({ type: 'start', enemy, profile, weapon })
-  }, [])
+  const start = useCallback(
+    (enemy: Enemy, profile: Profile, weapon: ShopItem | null, startingHp: number) => {
+      dispatch({ type: 'start', enemy, profile, weapon, startingHp })
+    },
+    [],
+  )
 
   const select = useCallback((action: PlayerAction) => {
     dispatch({ type: 'select', action })

@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ChevronLeft, Coins, Lock, Sparkles, Sword } from 'lucide-react'
-import { MAGIC_MANA_COST, xpToNext } from '@/lib/battle'
+import { MAGIC_MANA_COST, derivePlayerStats, xpToNext } from '@/lib/battle'
 import { useBattle } from '@/lib/useBattle'
 import { useCountUp } from '@/lib/useCountUp'
-import { resolveBattleAction } from '@/app/battle/actions'
+import { resolveBattleAction, syncHpAction } from '@/app/battle/actions'
 import ActionBar from './ActionBar'
 import CombatLog from './CombatLog'
 import EnemySprite from './EnemySprite'
+import HealCountdown from './HealCountdown'
 import HealthBar from './HealthBar'
 import type { BattleResult, Enemy, Profile, ShopItem } from '@/types'
 
@@ -17,14 +18,17 @@ interface BattleClientProps {
   profile: Profile
   weapon: ShopItem | null
   enemies: Enemy[]
+  /** Stored HP with time-based regeneration already applied, from the server. */
+  currentHp: number
 }
 
-export default function BattleClient({ profile, weapon, enemies }: BattleClientProps) {
+export default function BattleClient({ profile, weapon, enemies, currentHp }: BattleClientProps) {
   const { state, start, select, quit } = useBattle()
 
   const [gold, setGold] = useState(profile.gold)
   const [xp, setXp] = useState(profile.xp)
   const [level, setLevel] = useState(profile.level)
+  const [hp, setHp] = useState(currentHp)
   const [result, setResult] = useState<BattleResult | null>(null)
   const [error, setError] = useState<string | null>(null)
 
@@ -37,12 +41,17 @@ export default function BattleClient({ profile, weapon, enemies }: BattleClientP
   const enemy = state.enemy
   const finished = state.phase === 'won' || state.phase === 'lost'
 
+  // Recomputed from local level/xp so a mid-session level-up raises the
+  // ceiling straight away rather than waiting for a reload.
+  const maxHp = derivePlayerStats({ ...profile, level, xp }, weapon).maxHp
+  const knockedOut = hp <= 0
+
   useEffect(() => {
     if (!finished || !enemy || settled.current) return
     settled.current = true
 
     const victory = state.phase === 'won'
-    resolveBattleAction(enemy.key, victory).then(res => {
+    resolveBattleAction(enemy.key, victory, state.playerHp).then(res => {
       if ('error' in res) {
         setError(res.error)
         return
@@ -51,7 +60,11 @@ export default function BattleClient({ profile, weapon, enemies }: BattleClientP
       setGold(res.result.gold)
       setXp(res.result.xp)
       setLevel(res.result.level)
+      setHp(res.result.current_hp)
     })
+    // state.playerHp is intentionally read at settle time only -- adding it to
+    // the deps would re-run this on every tick of the fight.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [finished, enemy, state.phase])
 
   function beginFight(target: Enemy) {
@@ -60,10 +73,19 @@ export default function BattleClient({ profile, weapon, enemies }: BattleClientP
     setError(null)
     // Level is read from local state so a level-up mid-session raises your max
     // HP immediately rather than waiting for a reload.
-    start(target, { ...profile, level, xp }, weapon)
+    start(target, { ...profile, level, xp }, weapon, hp)
   }
 
   function backToCamp() {
+    // Fleeing mid-fight has to persist the damage taken, or retreating from a
+    // losing fight would be a free full heal.
+    if (state.phase === 'fighting' && state.playerHp < state.stats.maxHp) {
+      const fled = state.playerHp
+      setHp(fled)
+      syncHpAction(fled).then(res => {
+        if ('error' in res) setError(res.error)
+      })
+    }
     settled.current = false
     setResult(null)
     setError(null)
@@ -97,6 +119,16 @@ export default function BattleClient({ profile, weapon, enemies }: BattleClientP
               </span>
             </div>
             <HealthBar value={xp} max={xpToNext(level)} color="var(--gold)" height={5} />
+
+            <div className="flex items-center justify-between mt-3 mb-1.5">
+              <span className="text-[11px] font-medium" style={{ color: 'var(--text)' }}>HP</span>
+              <span className="text-[11px]" style={{ color: 'var(--text2)' }}>
+                {hp} / {maxHp}
+              </span>
+            </div>
+            <HealthBar value={hp} max={maxHp} color="var(--cat-wellness)" height={6} />
+            <HealCountdown currentHp={hp} maxHp={maxHp} />
+
             <div className="flex items-center gap-3 mt-3">
               <div className="flex items-center gap-1.5">
                 <Sword size={13} style={{ color: 'var(--cat-body)' }} />
@@ -121,9 +153,22 @@ export default function BattleClient({ profile, weapon, enemies }: BattleClientP
           Choose your opponent
         </p>
 
+        {knockedOut && (
+          <div className="px-5 pb-2">
+            <div
+              className="rounded-xl px-3.5 py-2.5"
+              style={{ background: 'rgba(240,153,123,0.10)', border: '1px solid var(--cat-body)' }}
+            >
+              <p className="text-[11px]" style={{ color: 'var(--cat-body)' }}>
+                You are out of health. Rest up before fighting again.
+              </p>
+            </div>
+          </div>
+        )}
+
         <div className="px-5 pb-6 flex flex-col gap-2">
           {enemies.map(e => {
-            const locked = level < e.min_level
+            const locked = level < e.min_level || knockedOut
             return (
               <button
                 key={e.key}
@@ -269,6 +314,7 @@ export default function BattleClient({ profile, weapon, enemies }: BattleClientP
         <div className="mt-1.5">
           <HealthBar value={state.playerMana} max={state.stats.maxMana} color="var(--cat-mind)" height={5} />
         </div>
+        <HealCountdown currentHp={state.playerHp} maxHp={state.stats.maxHp} />
       </div>
 
       <div className="px-5 pb-3">
@@ -320,7 +366,8 @@ export default function BattleClient({ profile, weapon, enemies }: BattleClientP
 
               {state.phase === 'lost' && (
                 <p className="text-[11px] text-center" style={{ color: 'var(--text2)' }}>
-                  No gold lost. Try bracing when a heavy strike is telegraphed.
+                  No gold lost, but you are out of health -- resting back to full takes
+                  10 hours. Try bracing when a heavy strike is telegraphed.
                 </p>
               )}
 

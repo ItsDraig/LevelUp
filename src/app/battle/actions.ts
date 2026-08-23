@@ -10,13 +10,16 @@ export type ActionResult<T extends object = object> = { error: string } | ({ suc
  * Records the outcome of a fight and pays out.
  *
  * Deliberately a thin wrapper: all the authority lives in the resolve_battle
- * RPC. The client names an enemy, never an amount -- the profiles update
- * policy is row-scoped with no `with check`, so anything that trusted a
- * client-supplied reward could be written straight from the browser.
+ * RPC. The client names an enemy and reports its ending HP, never a reward --
+ * the profiles update policy is row-scoped with no `with check`, so anything
+ * that trusted a client-supplied payout could be written straight from the
+ * browser. The RPC clamps the HP against a bound it computes itself, and
+ * forces zero on a defeat.
  */
 export async function resolveBattleAction(
   enemyKey: string,
   victory: boolean,
+  endingHp: number,
 ): Promise<ActionResult<{ result: BattleResult }>> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -25,6 +28,7 @@ export async function resolveBattleAction(
   const { data, error } = await supabase.rpc('resolve_battle', {
     p_enemy_key: enemyKey,
     p_victory: victory,
+    p_ending_hp: Math.max(0, Math.round(endingHp)),
   })
 
   if (error) return { error: error.message }
@@ -33,4 +37,28 @@ export async function resolveBattleAction(
   revalidatePath('/home')
   revalidatePath('/profile')
   return { success: true, result: data as BattleResult }
+}
+
+/**
+ * Persists HP without logging a battle -- used when fleeing.
+ *
+ * Without this, taking damage and walking away would be a free full heal. The
+ * RPC only ever writes HP downward, so this cannot be used to top up.
+ */
+export async function syncHpAction(
+  endingHp: number,
+): Promise<ActionResult<{ currentHp: number; maxHp: number }>> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Not authenticated.' }
+
+  const { data, error } = await supabase.rpc('sync_hp', {
+    p_hp: Math.max(0, Math.round(endingHp)),
+  })
+
+  if (error) return { error: error.message }
+
+  revalidatePath('/battle')
+  const row = data as { current_hp: number; max_hp: number }
+  return { success: true, currentHp: row.current_hp, maxHp: row.max_hp }
 }

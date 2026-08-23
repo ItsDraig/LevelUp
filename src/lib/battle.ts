@@ -149,3 +149,63 @@ export function resolveEnemyDamage(
 export function xpToNext(level: number): number {
   return 100 + (level - 1) * 60
 }
+
+// ---------------------------------------------------------------
+// HP persistence and regeneration
+//
+// HP carries between fights. Rather than a scheduled job ticking it upward,
+// `hp_updated_at` acts as an anchor and elapsed time is converted to healing
+// whenever HP is read. Nothing to schedule, and it is correct for a player
+// who has been away for a week.
+// ---------------------------------------------------------------
+
+/** Fraction of max HP restored per hour of rest. 10% => 10h from zero to full. */
+export const HP_REGEN_FRACTION_PER_HOUR = 0.1
+
+const MS_PER_HOUR = 3_600_000
+
+/**
+ * Stored HP plus whatever has regenerated since `hpUpdatedAt`.
+ *
+ * Note this does NOT advance the anchor -- callers must not persist the result
+ * as a new baseline unless they also write a fresh timestamp, or partial
+ * progress would be dropped on every read.
+ */
+export function regeneratedHp(
+  storedHp: number | null,
+  maxHp: number,
+  hpUpdatedAt: string | null,
+  now: number = Date.now(),
+): number {
+  if (storedHp === null || storedHp === undefined) return maxHp
+  if (!hpUpdatedAt) return Math.max(0, Math.min(maxHp, storedHp))
+
+  const anchor = new Date(hpUpdatedAt).getTime()
+  if (Number.isNaN(anchor)) return Math.max(0, Math.min(maxHp, storedHp))
+
+  const elapsedHours = Math.max(0, (now - anchor) / MS_PER_HOUR)
+  const healed = Math.floor(elapsedHours * HP_REGEN_FRACTION_PER_HOUR * maxHp)
+  return Math.max(0, Math.min(maxHp, storedHp + healed))
+}
+
+/**
+ * Minutes of rest until HP is full.
+ *
+ * The maxHp terms cancel, so this is purely a function of the missing
+ * fraction: empty to full is always 600 minutes regardless of how big the
+ * pool is. A bigger pool heals faster in absolute HP, not in wall-clock time.
+ */
+export function minutesToFullHeal(currentHp: number, maxHp: number): number {
+  if (maxHp <= 0 || currentHp >= maxHp) return 0
+  const missingFraction = (maxHp - Math.max(0, currentHp)) / maxHp
+  return Math.ceil((missingFraction / HP_REGEN_FRACTION_PER_HOUR) * 60)
+}
+
+/** "2h 24m till fully healed" / "18m till fully healed" */
+export function formatHealCountdown(minutes: number): string {
+  if (minutes <= 0) return ''
+  const hours = Math.floor(minutes / 60)
+  const mins = minutes % 60
+  const span = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`
+  return `${span} till fully healed`
+}
