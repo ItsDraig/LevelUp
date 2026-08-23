@@ -27,6 +27,35 @@
   earned, or undone. Effect is date-based so it naturally expires — no reset
   job needed.
 
+## Battle system (implemented, DB migration NOT yet applied)
+- Real-time tick loop in the Melvor mould: player and enemy each have their
+  own attack timer, and the player picks a *stance* (Attack / Defend / Magic)
+  that resolves on their next tick rather than tapping to swing.
+- Pure combat math lives in `src/lib/battle.ts` (no React, injectable `rng`);
+  the state machine is `src/lib/battleReducer.ts`; `src/lib/useBattle.ts` wraps
+  it in a requestAnimationFrame loop. UI is `src/components/battle/*`.
+- **`HEAVY_MULTIPLIER` must stay above 2.0.** Winding up costs the enemy its
+  whole turn, so at 2.0 a telegraphed heavy is break-even with two basics --
+  the telegraph becomes a *gift*, Defend becomes pointless, and the whole
+  thing collapses into attack-spam. This was measured, not guessed: at the
+  original 1.8 an always-attack bot beat correct play in 5 of 7 matchups.
+- The three actions only stay distinct because of the mana economy: Defend is
+  the only fast refill, Magic the only spend. Change one of
+  `MAGIC_MANA_COST` / `DEFEND_MANA_GAIN` / `ATTACK_MANA_GAIN` and re-simulate
+  before trusting it.
+- Rewards go through the `resolve_battle` **RPC**, not a Server Action, for
+  the reason already noted below re: the row-scoped profiles update policy.
+  The client passes an enemy key; the RPC reads gold/xp off `public.enemies`
+  so a reward amount can never be client-supplied. `battle_log` doubles as the
+  rate limiter (10s minimum between resolves).
+- XP/leveling is now wired: `profiles.xp` column + `xpToNext()` in
+  `src/lib/battle.ts`, **mirrored** in the RPC's PL/pgSQL. Change one, change
+  the other or the on-screen bar disagrees with the payout.
+- Balance sim harness (throwaway, in the scratchpad, not committed) drove
+  enemy tuning. Regenerate it by compiling `src/lib/battle.ts` +
+  `battleReducer.ts` with `tsc --outDir` and requiring them from plain node --
+  both files are React-free precisely so this works.
+
 ## PWA / installable app (set up, not yet hosted)
 - Goal is eventually a real iOS App Store app. Interim step is an installable
   PWA: `src/app/manifest.ts` (`display: standalone`), `appleWebApp` +
@@ -56,8 +85,6 @@
   that *and* are a prerequisite for the static-export path.
 
 ## Not yet done / known gaps
-- `/battle` is still a stub. Weapons carry a `combat_power` field for this,
-  but no combat loop exists yet.
 - Build warns that Turbopack inferred the workspace root from a stray
   `C:\Users\Oliver\package-lock.json`. Harmless so far; fix by setting
   `turbopack.root` in `next.config.ts` or deleting the stray lockfile.
