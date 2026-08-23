@@ -38,6 +38,33 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
   // the fight ending, so the settle is latched rather than keyed on phase.
   const settled = useRef(false)
 
+  // Mid-fight HP heartbeat.
+  //
+  // Fleeing already persists HP, but that write is fire-and-forget: navigating
+  // in the same instant aborts it, which restores the free-heal this was meant
+  // to prevent. Closing the tab mid-fight had the same effect. A throttled
+  // downward sync closes both -- HP only ever falls during combat, so these
+  // writes are monotonic and the RPC ignores anything that isn't a decrease.
+  const liveHp = useRef(state.playerHp)
+  const lastSynced = useRef<number | null>(null)
+
+  useEffect(() => {
+    liveHp.current = state.playerHp
+  }, [state.playerHp])
+
+  useEffect(() => {
+    if (state.phase !== 'fighting') return
+
+    const id = setInterval(() => {
+      const hpNow = liveHp.current
+      if (lastSynced.current !== null && hpNow >= lastSynced.current) return
+      lastSynced.current = hpNow
+      void syncHpAction(hpNow)
+    }, 5000)
+
+    return () => clearInterval(id)
+  }, [state.phase])
+
   const enemy = state.enemy
   const finished = state.phase === 'won' || state.phase === 'lost'
 
@@ -69,6 +96,7 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
 
   function beginFight(target: Enemy) {
     settled.current = false
+    lastSynced.current = null
     setResult(null)
     setError(null)
     // Level is read from local state so a level-up mid-session raises your max
@@ -168,29 +196,33 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
 
         <div className="px-5 pb-6 flex flex-col gap-2">
           {enemies.map(e => {
-            const locked = level < e.min_level || knockedOut
+            // Two distinct reasons a card is unavailable, and they must not
+            // be conflated: being knocked out dims every card, but only a
+            // genuine level gate should claim to be one.
+            const levelLocked = level < e.min_level
+            const unavailable = levelLocked || knockedOut
             return (
               <button
                 key={e.key}
                 type="button"
-                disabled={locked}
+                disabled={unavailable}
                 onClick={() => beginFight(e)}
                 className="flex items-center gap-3 rounded-2xl px-4 py-3 text-left active:scale-[0.99]"
                 style={{
                   background: 'var(--surface)',
                   border: '0.5px solid var(--border)',
-                  opacity: locked ? 0.55 : 1,
+                  opacity: unavailable ? 0.55 : 1,
                   transition: 'transform 100ms ease',
                 }}
               >
-                <EnemySprite enemyKey={e.key} size={44} muted={locked} />
+                <EnemySprite enemyKey={e.key} size={44} muted={unavailable} />
                 <div className="flex-1 min-w-0">
                   <p className="text-sm font-medium" style={{ color: 'var(--text)' }}>{e.name}</p>
                   <p className="text-[11px] truncate" style={{ color: 'var(--text2)' }}>
-                    {locked ? `Requires level ${e.min_level}` : e.flavor}
+                    {levelLocked ? `Requires level ${e.min_level}` : e.flavor}
                   </p>
                 </div>
-                {locked ? (
+                {levelLocked ? (
                   <Lock size={15} style={{ color: 'var(--text2)' }} />
                 ) : (
                   <div className="text-right flex-shrink-0">

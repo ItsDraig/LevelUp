@@ -58,7 +58,10 @@ export async function syncHpAction(
 
   if (error) return { error: error.message }
 
-  revalidatePath('/battle')
+  // Deliberately no revalidatePath: this runs on a heartbeat during a fight,
+  // and refreshing the route every few seconds would bounce the router
+  // mid-combat. The client tracks HP locally and the next real navigation
+  // picks up the stored value.
   const row = data as { current_hp: number; max_hp: number }
   return { success: true, currentHp: row.current_hp, maxHp: row.max_hp }
 }

@@ -46,7 +46,7 @@ export default function Hero({ streak, width = 176, height = 145, celebrating = 
   const figureH = height * 0.52
   const scale = figureH / 46
   const figureX = cx - (40 * scale) / 2
-  const figureY = logY - figureH + 2 * scale
+  const figureY = logY - figureH - 3 * scale
 
   return (
     <svg
@@ -98,17 +98,17 @@ export default function Hero({ streak, width = 176, height = 145, celebrating = 
         {/* Arms -- raised when celebrating */}
         {celebrating ? (
           <>
-            <rect x="3"  y="8"  width="5.5" height="14" rx="2.6" fill={TUNIC} transform="rotate(-28 5.75 15)" />
-            <rect x="31" y="8"  width="5.5" height="14" rx="2.6" fill={TUNIC} transform="rotate(28 33.75 15)" />
-            <circle cx="4"  cy="7" r="2.8" fill={SKIN} />
-            <circle cx="36" cy="7" r="2.8" fill={SKIN} />
+            <rect x="5.6"  y="7" width="4.2" height="13" rx="2.1" fill={TUNIC} transform="rotate(-30 7.7 13.5)" />
+            <rect x="30.2" y="7" width="4.2" height="13" rx="2.1" fill={TUNIC} transform="rotate(30 32.3 13.5)" />
+            <circle cx="4.6"  cy="5.6" r="2.2" fill={SKIN} />
+            <circle cx="35.4" cy="5.6" r="2.2" fill={SKIN} />
           </>
         ) : (
           <>
-            <rect x="5.5" y="18" width="5.5" height="13" rx="2.6" fill={TUNIC} transform="rotate(-8 8 24)" />
-            <rect x="29"  y="18" width="5.5" height="13" rx="2.6" fill={TUNIC} transform="rotate(8 32 24)" />
-            <circle cx="7.5" cy="31.5" r="2.8" fill={SKIN} />
-            <circle cx="32.5" cy="31.5" r="2.8" fill={SKIN} />
+            <rect x="7.3"  y="17.5" width="4.2" height="13" rx="2.1" fill={TUNIC} transform="rotate(-5 9.4 24)" />
+            <rect x="28.5" y="17.5" width="4.2" height="13" rx="2.1" fill={TUNIC} transform="rotate(5 30.6 24)" />
+            <circle cx="9.1"  cy="31" r="2.2" fill={SKIN} />
+            <circle cx="30.9" cy="31" r="2.2" fill={SKIN} />
           </>
         )}
 
@@ -119,8 +119,8 @@ export default function Hero({ streak, width = 176, height = 145, celebrating = 
         {/* Hair */}
         <path d="M13 7.5 Q13 1 20 1 Q27 1 27 7.5 Q23.5 4.6 20 4.9 Q16.5 4.6 13 7.5 Z" fill={HAIR} />
         {/* Eyes */}
-        <circle cx="17.4" cy="8.6" r="1.15" fill="#1A1A1A" />
-        <circle cx="22.6" cy="8.6" r="1.15" fill="#1A1A1A" />
+        <circle cx="17.7" cy="8.6" r="0.95" fill="#1A1A1A" />
+        <circle cx="22.3" cy="8.6" r="0.95" fill="#1A1A1A" />
       </g>
     </svg>
   )
