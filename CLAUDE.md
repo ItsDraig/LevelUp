@@ -27,7 +27,7 @@
   earned, or undone. Effect is date-based so it naturally expires — no reset
   job needed.
 
-## Battle system (implemented, DB migration NOT yet applied)
+## Battle system (implemented, DB migration applied)
 - Real-time tick loop in the Melvor mould: player and enemy each have their
   own attack timer, and the player picks a *stance* (Attack / Defend / Magic)
   that resolves on their next tick rather than tapping to swing.
@@ -62,7 +62,7 @@
   `battleReducer.ts` with `tsc --outDir` and requiring them from plain node --
   both files are React-free precisely so this works.
 
-## Persistent HP + regeneration (implemented, DB migration NOT yet applied)
+## Persistent HP + regeneration (implemented, DB migration applied)
 - HP no longer resets between fights. `profiles.current_hp` stores it and
   `profiles.hp_updated_at` is an *anchor*: regeneration is derived from elapsed
   time on read (`regeneratedHp()` in `src/lib/battle.ts`), so there is no cron
@@ -80,13 +80,29 @@
 - Fleeing calls the separate `sync_hp` RPC. Without it, taking damage and
   walking away would be a free full heal. `sync_hp` only ever writes HP
   *downward*, so it cannot be used to top up.
-- Closing the tab mid-fight still discards that fight's damage. Accepted --
-  the alternative is heartbeat writes on every tick.
+- A throttled 5s heartbeat in `BattleClient.tsx` syncs HP downward during a
+  fight. It exists because the flee write is fire-and-forget: navigating in the
+  same instant aborts it, which reopened the free-heal `sync_hp` was added to
+  close. It also covers closing the tab mid-fight. Because HP only ever falls
+  during combat the writes are monotonic, and `sync_hp` ignores any value that
+  is not a decrease. `syncHpAction` deliberately does **not** call
+  `revalidatePath` -- on a heartbeat that would bounce the router mid-combat.
 - Defeat forces HP to 0 server-side regardless of what the client reports, so
-  losing now costs a 10-hour rest. That is a real difficulty change: losses
-  used to be free.
+  losing costs a full 10-hour rest.
+- **That cost is deliberate, not an oversight to be tuned away.** The app is
+  for making progress on goals; battling is a reward loop attached to that, not
+  the point of the app. A hard cap of roughly a few fights a day is the
+  intended shape, and the 10-hour rest is what enforces it. Anyone (including a
+  future Claude) looking at a 10-hour lockout and reading it as "too harsh"
+  should leave it alone unless Oliver says otherwise.
+- Idea, not built: make **wellness raise the heal rate**, so the stat has a
+  second-order use beyond max HP and resting rewards the wellness habit. Would
+  mean `HP_REGEN_FRACTION_PER_HOUR` becoming a function of `stat_wellness`
+  in `src/lib/battle.ts` -- and note it would have to stay purely a *display*
+  concern or move into SQL too, since `regeneratedHp()` is what the server
+  renders from.
 
-## PWA / installable app (set up, not yet hosted)
+## PWA / installable app (hosted; install not yet re-tested)
 - Goal is eventually a real iOS App Store app. Interim step is an installable
   PWA: `src/app/manifest.ts` (`display: standalone`), `appleWebApp` +
   `viewport` exports in `src/app/layout.tsx`, and placeholder pixel-art icons
@@ -101,10 +117,12 @@
   (`src/proxy.ts`). Browsers fetch the manifest without credentials, so gating
   it behind the auth check redirects it to `/auth/login` and install silently
   fails. This bug was hit and fixed once already.
-- Install requires **HTTPS** — the LAN URL (`http://10.0.0.100:3000`) cannot be
-  added to a home screen. Needs hosting (Vercel) first. `next.config.ts` has
-  `allowedDevOrigins` set to the LAN IP for phone testing over plain HTTP;
-  that IP is DHCP-assigned and will need updating if it changes.
+- Install requires **HTTPS**, which the LAN URL (`http://10.0.0.100:3000`)
+  cannot provide. **This is now unblocked** — the app is live on Vercel at
+  `level-up-smoky-gamma.vercel.app`, so add-to-home-screen should finally work.
+  Not yet tried on a real phone; that is the next step for the PWA goal.
+  `next.config.ts` still has `allowedDevOrigins` set to the LAN IP for plain
+  HTTP phone testing; that IP is DHCP-assigned and needs updating if it moves.
 - Migrating to a bundled-offline native app (static export + Capacitor) is
   blocked by Server Actions, cookies, and proxy — all unsupported under
   `output: 'export'`. Deliberately deferred; see the note on RPCs below.
@@ -114,7 +132,48 @@
   the anon key can already write `gold` directly from the browser. RPCs fix
   that *and* are a prerequisite for the static-export path.
 
+## Hosting / deploy (live)
+- Live at `level-up-smoky-gamma.vercel.app`. The Vercel project is git-connected
+  to `ItsDraig/LevelUp`, so **pushes to `main` auto-deploy to Production**.
+- Pushing needs the **ItsDraig** GitHub account. The machine's default `gh`
+  login is a different account and gets a 403 on push --
+  `gh auth switch -u ItsDraig` first. Commits succeed either way, so a failed
+  push is easy to misread as done.
+- `NEXT_PUBLIC_*` vars are **inlined at build time**. Adding or fixing them in
+  the Vercel dashboard changes nothing until a rebuild ("Redeploy", with the
+  build cache unchecked). The signature of missing env vars is distinctive:
+  every route the proxy matches returns 500 while proxy-*excluded* paths
+  (`manifest.webmanifest`, `*.png`) still serve 200 -- because `src/proxy.ts`
+  constructs a Supabase client from those vars before anything else, and
+  supabase-js throws `supabaseUrl is required.` on an empty value.
+- Supabase -> Authentication -> URL Configuration needs the production origin as
+  Site URL and `<origin>/auth/callback` in Redirect URLs, or auth works locally
+  and breaks in prod (`src/app/auth/callback/route.ts` is what cares).
+- Vercel **project** names must be lowercase; the repo being named `LevelUp` is
+  irrelevant and does not need renaming. Set the project-name field at import.
+- Connecting a repo does **not** itself trigger a build, and "Redeploy" on a
+  deployment that originally came from a non-git source rebuilds *that old
+  snapshot* rather than pulling from git. Check the deployment's commit hash.
+- To check from the CLI whether Vercel actually reacted to a push:
+  `gh api repos/ItsDraig/LevelUp/deployments`. A git-connected project
+  registers a deployment per push; an empty array means it is not connected,
+  whatever the dashboard's Git settings appear to say.
+
 ## Not yet done / known gaps
+- The mid-fight HP heartbeat runs every 5s, so **up to 5 seconds of damage can
+  still escape** if the tab is closed or navigated away at the wrong moment.
+  Much better than losing a whole fight, but not exact.
+- Combat balance is simulation-verified across builds and matchups, and
+  spot-checked in play against the **Slime only**. The Bandit and Golem are
+  where attack-spam drops to 82% / 98% in simulation and neither has been
+  played by hand.
+- The mana economy has not been felt out over a long session; it is the part of
+  the combat design most likely to want tuning.
+- PWA add-to-home-screen has never been tried on a real device, even though
+  HTTPS hosting now makes it possible.
+- Enemy roster is 5 hand-authored SVG sprites in `EnemySprite.tsx`; the hero in
+  `Hero.tsx` was redrawn to match that register. App icons are still the
+  programmatic placeholders.
 - (Fixed) The Turbopack workspace-root warning is gone -- `turbopack.root` is
   pinned to the project in `next.config.ts`. The stray
   `C:\Users\Oliver\package-lock.json` that caused it is junk and still
@@ -126,6 +185,11 @@
   work that sits behind auth (`/home`, `/tasks`, `/shop`, `/profile`).
 - **Never move these into this file.** CLAUDE.md is committed and
   `github.com/ItsDraig/LevelUp` is a public repo. `.env*` is gitignored.
+- Testing `/battle` can leave the account on 0 HP, which locks battling for 10
+  hours by design. There is no in-app heal, and `sync_hp` only writes HP
+  downward on purpose, so reset it in the SQL editor when testing:
+  `update public.profiles set current_hp = public.hp_max(level, stat_wellness),
+  hp_updated_at = now() where username = 'test';`
 
 ## DB workflow gotcha
 - `supabase/schema.sql` is a single hand-maintained file, not a migrations
