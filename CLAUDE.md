@@ -91,9 +91,10 @@
   that *and* are a prerequisite for the static-export path.
 
 ## Not yet done / known gaps
-- Build warns that Turbopack inferred the workspace root from a stray
-  `C:\Users\Oliver\package-lock.json`. Harmless so far; fix by setting
-  `turbopack.root` in `next.config.ts` or deleting the stray lockfile.
+- (Fixed) The Turbopack workspace-root warning is gone -- `turbopack.root` is
+  pinned to the project in `next.config.ts`. The stray
+  `C:\Users\Oliver\package-lock.json` that caused it is junk and still
+  sitting there, but nothing reads it now.
 
 ## Test account
 - Credentials for a throwaway test user live in `.env.local` as
