@@ -43,6 +43,12 @@
   the only fast refill, Magic the only spend. Change one of
   `MAGIC_MANA_COST` / `DEFEND_MANA_GAIN` / `ATTACK_MANA_GAIN` and re-simulate
   before trusting it.
+- A cast that empties the bar reverts the stance to Attack, and ActionBar
+  disables Magic while short. Do **not** "simplify" this into falling back to a
+  swing at resolve time -- if a short cast just attacked instead, leaving Magic
+  permanently selected would be strictly optimal and the mana decision would
+  stop existing. The reducer snapshots `resolvedAction` before reverting so the
+  log line and damage-number colour describe the move that actually happened.
 - Rewards go through the `resolve_battle` **RPC**, not a Server Action, for
   the reason already noted below re: the row-scoped profiles update policy.
   The client passes an enemy key; the RPC reads gold/xp off `public.enemies`

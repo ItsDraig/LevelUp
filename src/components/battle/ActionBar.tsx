@@ -22,21 +22,23 @@ export default function ActionBar({ selected, mana, onSelect, disabled }: Action
     <div className="grid grid-cols-3 gap-2">
       {ACTIONS.map(({ key, label, Icon, color }) => {
         const isSelected = selected === key
-        // Magic stays selectable while short on mana -- the bar refills mid-tick,
-        // so pre-selecting it is legitimate. It just fizzles if it's still short.
+        // Magic is unselectable while short: a stance that cannot resolve is a
+        // trap, and the reducer already drops back to Attack after a cast that
+        // empties the bar. Casting stays a deliberate tap once mana is banked.
         const short = key === 'magic' && mana < MAGIC_MANA_COST
+        const unavailable = disabled || short
 
         return (
           <button
             key={key}
             type="button"
-            disabled={disabled}
+            disabled={unavailable}
             onClick={() => onSelect(key)}
             className="flex flex-col items-center gap-1 rounded-2xl py-3 active:scale-[0.97]"
             style={{
               background: isSelected ? 'var(--surface3)' : 'var(--surface)',
               border: `1px solid ${isSelected ? color : 'var(--border)'}`,
-              opacity: disabled ? 0.4 : 1,
+              opacity: unavailable ? 0.4 : 1,
               transition: 'background 140ms ease, border-color 140ms ease, transform 100ms ease',
             }}
           >

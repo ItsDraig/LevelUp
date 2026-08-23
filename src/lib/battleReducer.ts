@@ -1,4 +1,5 @@
 import {
+  MAGIC_MANA_COST,
   PLAYER_TICK_MS,
   RECOVER_FRACTION,
   derivePlayerStats,
@@ -113,14 +114,20 @@ export function battleReducer(state: BattleState, event: BattleEvent): BattleSta
       if (next.playerCharge >= 1) {
         next.playerCharge -= 1
 
-        const outcome = resolvePlayerAction(next.action, next.stats, next.playerMana, rng)
+        // Snapshot the stance that is actually resolving: the revert at the end
+        // of this block rewrites next.action, and the log/damage-number styling
+        // below must describe the move that happened, not the next one.
+        const resolvedAction = next.action
+
+        const outcome = resolvePlayerAction(resolvedAction, next.stats, next.playerMana, rng)
         next.defending = outcome.defending
         next.playerMana = Math.max(0, Math.min(next.stats.maxMana, next.playerMana + outcome.manaDelta))
 
         if (outcome.defending) {
           next = withLog(next, 'player', 'You brace behind your guard.')
-        } else if (next.action === 'magic' && outcome.damage === 0) {
-          // Selected Magic but the mana ran out before the tick resolved.
+        } else if (resolvedAction === 'magic' && outcome.damage === 0) {
+          // Defensive only -- the stance revert below plus the disabled button
+          // in ActionBar mean this should be unreachable in practice.
           next = withLog(next, 'player', 'Not enough mana -- the spell fizzles.')
         } else {
           next.enemyHp = Math.max(0, next.enemyHp - outcome.damage)
@@ -128,15 +135,24 @@ export function battleReducer(state: BattleState, event: BattleEvent): BattleSta
             id: next.seq,
             side: 'enemy',
             amount: outcome.damage,
-            kind: next.action === 'magic' ? 'magic' : 'basic',
+            kind: resolvedAction === 'magic' ? 'magic' : 'basic',
           }
           next = withLog(
             next,
             'player',
-            next.action === 'magic'
+            resolvedAction === 'magic'
               ? `Your spell sears ${enemy.name} for ${outcome.damage}.`
               : `You strike ${enemy.name} for ${outcome.damage}.`,
           )
+        }
+
+        // Drop back to Attack the moment a cast leaves us short, rather than
+        // letting a stale Magic stance silently burn tick after tick.
+        // Deliberately NOT an auto-fallback at resolve time: if a short cast
+        // just swung instead, leaving Magic selected forever would be strictly
+        // optimal and the mana decision would stop existing.
+        if (resolvedAction === 'magic' && next.playerMana < MAGIC_MANA_COST) {
+          next.action = 'attack'
         }
 
         if (next.enemyHp <= 0) {
