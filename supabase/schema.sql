@@ -208,3 +208,173 @@ where not exists (select 1 from public.shop_items where type = 'weapon');
 -- ============================================================
 
 alter table public.profiles add column if not exists double_gold_date date default null;
+
+-- ============================================================
+-- Migration: battle system -- enemies, XP/leveling, battle log
+-- Safe to re-run; guards on existence before altering.
+--
+-- The fight itself runs client-side (a real-time tick loop can't
+-- round-trip per tick), so ONLY the outcome is persisted, and it goes
+-- through resolve_battle() below rather than a direct table write:
+-- the profiles update policy is row-scoped with no `with check`, so the
+-- anon key can already set `gold` to anything straight from the browser.
+-- The RPC reads rewards off public.enemies, so the client names an
+-- enemy, never an amount.
+-- ============================================================
+
+-- Enemy roster. Stat block is read by the client to run the fight;
+-- gold_reward/xp_reward are re-read server-side by resolve_battle().
+create table if not exists public.enemies (
+  key             text primary key,
+  name            text not null,
+  flavor          text not null default '',
+  max_hp          integer not null,
+  attack_damage   integer not null,
+  tick_ms         integer not null default 2800,
+  heavy_chance    numeric not null default 0.15,  -- chance/tick of a telegraphed heavy
+  recover_chance  numeric not null default 0.0,   -- chance/tick of self-heal
+  gold_reward     integer not null,
+  xp_reward       integer not null,
+  min_level       integer not null default 1,
+  sort_order      integer not null default 0
+);
+
+alter table public.enemies enable row level security;
+drop policy if exists "Anyone can view enemies" on public.enemies;
+create policy "Anyone can view enemies" on public.enemies for select using (true);
+
+insert into public.enemies
+  (key, name, flavor, max_hp, attack_damage, tick_ms, heavy_chance, recover_chance, gold_reward, xp_reward, min_level, sort_order)
+values
+  ('slime',  'Green Slime',     'Barely hostile. Mostly damp.',              45,  5,  3200, 0.12, 0.00,  12,  25, 1, 1),
+  ('goblin', 'Goblin Scout',    'Fast, cowardly, and armed with a rock.',    70,  7,  2800, 0.15, 0.00,  25,  45, 2, 2),
+  ('wolf',   'Dire Wolf',       'Hits often. Does not telegraph politely.',  135, 12, 2200, 0.18, 0.00,  40,  80, 3, 3),
+  ('bandit', 'Highway Bandit',  'Wants your gold. Will work for it.',        185, 16, 2600, 0.22, 0.05,  65, 140, 5, 4),
+  ('golem',  'Stone Golem',     'Slow, enormous, and extremely patient.',    270, 22, 3600, 0.28, 0.08, 110, 240, 8, 5)
+on conflict (key) do update set
+  name           = excluded.name,
+  flavor         = excluded.flavor,
+  max_hp         = excluded.max_hp,
+  attack_damage  = excluded.attack_damage,
+  tick_ms        = excluded.tick_ms,
+  heavy_chance   = excluded.heavy_chance,
+  recover_chance = excluded.recover_chance,
+  gold_reward    = excluded.gold_reward,
+  xp_reward      = excluded.xp_reward,
+  min_level      = excluded.min_level,
+  sort_order     = excluded.sort_order;
+
+-- XP toward the next level. `level` already existed but was never written
+-- to by anything -- battle is the first thing that moves it.
+alter table public.profiles add column if not exists xp integer not null default 0;
+
+-- One row per resolved fight. Doubles as the rate-limit source.
+create table if not exists public.battle_log (
+  id            uuid primary key default gen_random_uuid(),
+  user_id       uuid references auth.users(id) on delete cascade not null,
+  enemy_key     text references public.enemies(key) on delete cascade not null,
+  victory       boolean not null,
+  gold_awarded  integer not null default 0,
+  xp_awarded    integer not null default 0,
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists battle_log_user_created_idx
+  on public.battle_log (user_id, created_at desc);
+
+alter table public.battle_log enable row level security;
+drop policy if exists "Users can view own battle log" on public.battle_log;
+create policy "Users can view own battle log" on public.battle_log for select using (auth.uid() = user_id);
+-- No insert policy on purpose: rows are written by resolve_battle() only.
+
+-- Resolve a finished battle and pay out.
+--
+-- security definer + a pinned search_path: without the pin, a caller who
+-- can create objects on their own search_path could shadow the tables this
+-- function references and have it operate on those instead.
+--
+-- The XP curve here is mirrored in src/lib/battle.ts (xpToNext). Change one,
+-- change the other.
+create or replace function public.resolve_battle(p_enemy_key text, p_victory boolean)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id       uuid := auth.uid();
+  v_enemy         public.enemies%rowtype;
+  v_profile       public.profiles%rowtype;
+  v_gold          integer := 0;
+  v_xp            integer := 0;
+  v_new_level     integer;
+  v_new_xp        integer;
+  v_levels_gained integer := 0;
+  v_need          integer;
+  v_last          timestamptz;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.' using errcode = '28000';
+  end if;
+
+  select * into v_enemy from public.enemies where key = p_enemy_key;
+  if not found then
+    raise exception 'Unknown enemy: %', p_enemy_key using errcode = '22023';
+  end if;
+
+  select * into v_profile from public.profiles where user_id = v_user_id for update;
+  if not found then
+    raise exception 'Profile not found.' using errcode = 'P0002';
+  end if;
+
+  if v_profile.level < v_enemy.min_level then
+    raise exception 'Requires level %.', v_enemy.min_level using errcode = '22023';
+  end if;
+
+  -- The shortest winnable fight is ~20s. Anything faster is a script calling
+  -- the RPC directly, not someone playing.
+  select max(created_at) into v_last from public.battle_log where user_id = v_user_id;
+  if v_last is not null and v_last > now() - interval '10 seconds' then
+    raise exception 'Too soon since your last battle.' using errcode = '55000';
+  end if;
+
+  v_new_level := v_profile.level;
+  v_new_xp    := v_profile.xp;
+
+  if p_victory then
+    v_gold   := v_enemy.gold_reward;
+    v_xp     := v_enemy.xp_reward;
+    v_new_xp := v_new_xp + v_xp;
+
+    -- Loop, so one big win can carry across several levels.
+    loop
+      v_need := 100 + (v_new_level - 1) * 60;
+      exit when v_new_xp < v_need;
+      v_new_xp        := v_new_xp - v_need;
+      v_new_level     := v_new_level + 1;
+      v_levels_gained := v_levels_gained + 1;
+    end loop;
+
+    update public.profiles
+       set gold  = gold + v_gold,
+           xp    = v_new_xp,
+           level = v_new_level
+     where user_id = v_user_id;
+  end if;
+
+  insert into public.battle_log (user_id, enemy_key, victory, gold_awarded, xp_awarded)
+  values (v_user_id, p_enemy_key, p_victory, v_gold, v_xp);
+
+  return json_build_object(
+    'gold_awarded',  v_gold,
+    'xp_awarded',    v_xp,
+    'gold',          v_profile.gold + v_gold,
+    'xp',            v_new_xp,
+    'level',         v_new_level,
+    'levels_gained', v_levels_gained
+  );
+end;
+$$;
+
+revoke all    on function public.resolve_battle(text, boolean) from public;
+grant  execute on function public.resolve_battle(text, boolean) to authenticated;

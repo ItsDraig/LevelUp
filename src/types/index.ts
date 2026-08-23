@@ -19,6 +19,7 @@ export interface Profile {
   paid_task_count: number
   equipped_weapon_id: string | null
   double_gold_date: string | null // YYYY-MM-DD -- gold-doubling active for this date
+  xp: number // progress toward the next level; reset by the carry on level-up
   created_at: string
 }
 
@@ -81,4 +82,47 @@ export interface InventoryItem {
 export interface TaskWithStatus extends Task {
   completedToday: boolean
   readded: boolean // was completed then undone -- no gold on re-complete
+}
+
+// ---------------------------------------------------------------
+// Battle
+// ---------------------------------------------------------------
+
+export interface Enemy {
+  key: string
+  name: string
+  flavor: string
+  max_hp: number
+  attack_damage: number
+  tick_ms: number
+  heavy_chance: number
+  recover_chance: number
+  gold_reward: number
+  xp_reward: number
+  min_level: number
+  sort_order: number
+}
+
+// The player's selected stance. It resolves on their next tick rather than
+// on tap, so it can be switched freely while a tick is charging.
+export type PlayerAction = 'attack' | 'defend' | 'magic'
+
+export type EnemyMove = 'basic' | 'heavy' | 'recover'
+
+export type BattlePhase = 'picking' | 'fighting' | 'won' | 'lost'
+
+export interface CombatLogEntry {
+  id: number
+  side: 'player' | 'enemy' | 'system'
+  text: string
+}
+
+// What resolve_battle() returns.
+export interface BattleResult {
+  gold_awarded: number
+  xp_awarded: number
+  gold: number
+  xp: number
+  level: number
+  levels_gained: number
 }
