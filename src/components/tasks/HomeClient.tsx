@@ -1,16 +1,19 @@
 'use client'
 
-import { useState, useCallback, useEffect } from 'react'
-import { ChevronDown, ChevronUp, Check, Snowflake } from 'lucide-react'
+import { useState, useCallback, useEffect, useRef } from 'react'
+import { ChevronDown, ChevronUp, Check, Snowflake, HeartPulse } from 'lucide-react'
 import Hero from '@/components/hero/Hero'
 import TimeOfDayBackdrop from '@/components/home/TimeOfDayBackdrop'
 import TaskCard from '@/components/tasks/TaskCard'
 import CompletedTaskCard from '@/components/tasks/CompletedTaskCard'
+import HealthBar from '@/components/battle/HealthBar'
+import { grantTaskCompletionHealAction } from '@/app/home/actions'
 import { createClient } from '@/lib/supabase/client'
 import { todayString, completedToday } from '@/lib/dates'
 import { CATEGORY_CONFIG } from '@/lib/constants'
+import { applyGoldBonus, careerGoldBonusPercent } from '@/lib/battle'
 import { useCountUp } from '@/lib/useCountUp'
-import type { Profile, TaskWithStatus } from '@/types'
+import type { Profile, StatKey, TaskHealResult, TaskWithStatus } from '@/types'
 
 interface HomeClientProps {
   profile: Profile
@@ -22,6 +25,25 @@ interface HomeClientProps {
 export default function HomeClient({ profile, initialTasks, streakFrozen, doubleGoldActive }: HomeClientProps) {
   const goldMultiplier = doubleGoldActive ? 2 : 1
   const supabase = createClient()
+
+  // Career's gold bonus is read once and held for the session rather than
+  // recomputed as Career rises. Completing and undoing a task have to reverse
+  // exactly the same number of coins, and a multiplier that moved underneath
+  // them would leave gold drifting a little every time. The higher rate simply
+  // applies from the next load.
+  const [career] = useState(profile.stat_career)
+  const careerBonusPct = careerGoldBonusPercent(career)
+
+  // Category stats accumulate here across the session before being written.
+  // Deriving each write from the `profile` prop instead wrote the same
+  // initial+1 every time, so a second Mind task in one sitting was a no-op --
+  // which in turn kept Career (and so its gold bonus) pinned near zero.
+  const statsRef = useRef<Record<StatKey, number>>({
+    stat_mind: profile.stat_mind,
+    stat_body: profile.stat_body,
+    stat_wellness: profile.stat_wellness,
+    stat_career: profile.stat_career,
+  })
 
   const [gold, setGold] = useState(profile.gold)
   const displayGold = useCountUp(gold)
@@ -39,6 +61,7 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
     () => completedToday(profile.last_completed_date)
   )
   const [dayToast, setDayToast] = useState<'hidden' | 'visible' | 'fading'>('hidden')
+  const [heal, setHeal] = useState<TaskHealResult | null>(null)
   const [freezeToast, setFreezeToast] = useState<'hidden' | 'visible' | 'fading'>(
     streakFrozen ? 'visible' : 'hidden'
   )
@@ -66,7 +89,10 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
   }, [freezeToast])
 
   const handleComplete = useCallback(async (task: TaskWithStatus) => {
-    const goldEarned = task.readded ? 0 : task.gold_value * goldMultiplier
+    // Career applies after Double Gold Day, so the two compound rather than
+    // one swallowing the other. Same order in handleUndo, or a task completed
+    // and undone would not net to zero.
+    const goldEarned = task.readded ? 0 : applyGoldBonus(task.gold_value * goldMultiplier, career)
     const today = todayString()
 
     // Optimistically update UI
@@ -94,7 +120,10 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
       // Update profile gold + stat
       const statKey = CATEGORY_CONFIG[task.category].statKey
       const updates: Record<string, unknown> = { gold: gold + goldEarned }
-      if (statKey && !task.readded) updates[statKey] = (profile[statKey] ?? 0) + 1
+      if (statKey && !task.readded) {
+        statsRef.current[statKey] += 1
+        updates[statKey] = statsRef.current[statKey]
+      }
 
       await supabase.from('profiles').update(updates).eq('user_id', profile.user_id)
     } catch (e) {
@@ -105,6 +134,12 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
     setActiveTasks(prev => {
       if (prev.length === 0) {
         setTimeout(async () => {
+          // Claimed before the early return below, and on every clear rather
+          // than only the first: the RPC is the authority on whether a heal is
+          // owed today, so asking twice is free and asking once too few is not.
+          const healRes = await grantTaskCompletionHealAction(today)
+          if ('success' in healRes && healRes.result.healed) setHeal(healRes.result)
+
           if (dayAlreadyCompleted) {
             // Complete screen already shown today (e.g. task was undone and
             // redone) -- just flash a small confirmation instead.
@@ -124,11 +159,11 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
       }
       return prev
     })
-  }, [gold, profile, streak, supabase, dayAlreadyCompleted, goldMultiplier])
+  }, [gold, profile, streak, supabase, dayAlreadyCompleted, goldMultiplier, career])
 
   const handleUndo = useCallback(async (task: TaskWithStatus) => {
     const today = todayString()
-    const goldToReverse = task.gold_value * goldMultiplier
+    const goldToReverse = applyGoldBonus(task.gold_value * goldMultiplier, career)
 
     setCompletedTasks(prev => prev.filter(t => t.id !== task.id))
     setActiveTasks(prev => [...prev, { ...task, completedToday: false, readded: true }])
@@ -148,7 +183,7 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
       .delete()
       .eq('task_id', task.id)
       .eq('completed_date', today)
-  }, [gold, profile.user_id, supabase, goldMultiplier])
+  }, [gold, profile.user_id, supabase, goldMultiplier, career])
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden relative">
@@ -171,6 +206,13 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
         </div>
 
         <div className="flex items-center gap-1.5" style={{ color: 'var(--gold)' }}>
+          {careerBonusPct > 0 && (
+            <span
+              className="text-[9px] font-bold px-1.5 py-0.5 rounded-full leading-none"
+              style={{ background: 'var(--cat-career)', color: '#0b1520' }}
+              title={`Career bonus: +${careerBonusPct}% gold`}
+            >+{careerBonusPct}%</span>
+          )}
           {doubleGoldActive && (
             <span
               className="text-[9px] font-bold px-1.5 py-0.5 rounded-full leading-none"
@@ -290,6 +332,42 @@ export default function HomeClient({ profile, initialTasks, streakFrozen, double
           <Hero streak={streak + 1} celebrating width={180} height={155} />
 
           <p className="text-sm" style={{ color: 'var(--text2)' }}>All tasks done for today.</p>
+
+          {/* The day's heal. The bar is the same component the battle screen
+              uses, so the temporary bonus is drawn in the same colour here as
+              it will be when you next go and spend it. */}
+          {heal && (
+            <div
+              className="w-full rounded-xl px-3.5 py-3"
+              style={{ background: 'var(--surface)', border: '0.5px solid var(--border2)' }}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-1.5">
+                  <HeartPulse size={13} style={{ color: 'var(--cat-wellness)' }} />
+                  <span className="text-[11px] font-medium" style={{ color: 'var(--text)' }}>
+                    Fully healed
+                  </span>
+                </div>
+                <span className="text-[11px]" style={{ color: 'var(--text2)' }}>
+                  {heal.current_hp} / {heal.max_hp}
+                </span>
+              </div>
+
+              <HealthBar
+                value={heal.current_hp}
+                max={heal.max_hp}
+                color="var(--cat-wellness)"
+                overhealColor="var(--gold)"
+                height={8}
+              />
+
+              {heal.overheal > 0 && (
+                <p className="text-[10px] mt-1.5" style={{ color: 'var(--gold)' }}>
+                  +{heal.overheal} bonus HP -- temporary, and it will not regenerate once spent.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* XP gains */}
           {Object.keys(sessionGains).length > 0 && (

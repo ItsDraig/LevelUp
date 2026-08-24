@@ -566,3 +566,398 @@ $$;
 
 revoke all     on function public.resolve_battle(text, boolean, integer) from public;
 grant  execute on function public.resolve_battle(text, boolean, integer) to authenticated;
+
+-- ============================================================
+-- Migration: stat scaling + task-completion overheal
+-- Safe to re-run; guards on existence before altering.
+--
+-- Two things land together because they share a clamp.
+--
+-- 1. Clearing every task for the day heals a full max-HP on top of current
+--    HP rather than capped at it, so 50% -> 150% and 1% -> 101%. The excess
+--    is a temporary buffer: damage spends it first and regeneration never
+--    puts it back. It needs no separate column -- overheal is simply HP
+--    above hp_max, so every existing damage path already spends it in the
+--    right order. What it does need is for every clamp that used to bound
+--    HP at hp_max to bound it at hp_ceiling instead.
+--
+-- 2. Career now multiplies gold earned. Battle payouts are computed in
+--    resolve_battle rather than by the client, so the multiplier has to
+--    exist here as well as in src/lib/battle.ts.
+-- ============================================================
+
+-- At most one task-completion heal per day. Compared against, never trusted:
+-- see the strictly-increasing guard in grant_task_completion_heal.
+alter table public.profiles add column if not exists last_heal_date date;
+
+-- The absolute HP ceiling, overheal included.
+--
+-- MIRRORED as hpCeiling() in src/lib/battle.ts. Since the day's heal adds a
+-- full max-HP, full -> 200% is the most that can ever be reached.
+create or replace function public.hp_ceiling(p_level integer, p_wellness integer)
+returns integer
+language sql
+immutable
+set search_path = public
+as $$
+  select public.hp_max(p_level, p_wellness) * 2;
+$$;
+
+-- Career's gold bonus, in whole percent.
+--
+-- MIRRORED as careerGoldBonusPercent() in src/lib/battle.ts. Whole percent
+-- and integer division on both sides deliberately: integer division agrees
+-- between PL/pgSQL and JS, 0.02 does not, and a payout that disagreed with
+-- the number the client just animated would look like a bug to the player.
+create or replace function public.gold_bonus_percent(p_career integer)
+returns integer
+language sql
+immutable
+set search_path = public
+as $$
+  select least(100, greatest(coalesce(p_career, 0), 0) * 2);
+$$;
+
+-- Stored HP plus whatever has regenerated since the anchor.
+--
+-- MIRRORED as regeneratedHp() in src/lib/battle.ts. It has to exist here
+-- because both the heal and the flee-sync compare a client-reported figure
+-- against the player's *actual* current HP, and the stored column is only a
+-- baseline -- the regenerated value is what the client is looking at.
+--
+-- Stops at hp_max, and returns an already-overhealed value untouched rather
+-- than clamping it down: clamping here would delete the day's bonus on the
+-- first read after it was granted.
+create or replace function public.hp_regenerated(
+  p_stored  integer,
+  p_max_hp  integer,
+  p_anchor  timestamptz
+)
+returns integer
+language sql
+stable
+set search_path = public
+as $$
+  select case
+    when p_stored is null then p_max_hp
+    -- At or above full there is nothing to accrue, and this is also the guard
+    -- that keeps regeneration from touching overheal at all.
+    when least(greatest(p_stored, 0), p_max_hp * 2) >= p_max_hp
+      then least(greatest(p_stored, 0), p_max_hp * 2)
+    when p_anchor is null then greatest(p_stored, 0)
+    else least(
+      p_max_hp,
+      greatest(p_stored, 0)
+        + floor(
+            greatest(extract(epoch from (now() - p_anchor)), 0) / 3600.0
+            * 0.1 * p_max_hp
+          )::integer
+    )
+  end;
+$$;
+
+-- ------------------------------------------------------------
+-- sync_hp: clamp at the ceiling, and compare against regenerated HP
+-- ------------------------------------------------------------
+--
+-- Two changes. The clamp moves from hp_max to hp_ceiling, or draining an
+-- overheal mid-fight would be silently discarded as "not a decrease".
+--
+-- And the downward-only test now compares against hp_regenerated rather than
+-- the raw stored column. The stored value is a stale baseline: someone stored
+-- at 30/100 who has rested up to 80 and then fights down to 50 was reporting
+-- a genuine decrease that the old test rejected as an increase, losing the
+-- whole fight's damage and leaving the old anchor to keep accruing.
+create or replace function public.sync_hp(p_hp integer)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id   uuid := auth.uid();
+  v_profile   public.profiles%rowtype;
+  v_max_hp    integer;
+  v_ceiling   integer;
+  v_effective integer;
+  v_clamped   integer;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.' using errcode = '28000';
+  end if;
+
+  select * into v_profile from public.profiles where user_id = v_user_id for update;
+  if not found then
+    raise exception 'Profile not found.' using errcode = 'P0002';
+  end if;
+
+  v_max_hp    := public.hp_max(v_profile.level, v_profile.stat_wellness);
+  v_ceiling   := public.hp_ceiling(v_profile.level, v_profile.stat_wellness);
+  v_clamped   := greatest(0, least(coalesce(p_hp, v_ceiling), v_ceiling));
+  v_effective := public.hp_regenerated(v_profile.current_hp, v_max_hp, v_profile.hp_updated_at);
+
+  -- Only ever writes downward. Regeneration is time-based and derived on read,
+  -- so accepting an increase here would let a caller heal at will.
+  if v_clamped >= v_effective then
+    return json_build_object(
+      'current_hp', v_effective,
+      'max_hp',     v_max_hp,
+      'ceiling',    v_ceiling,
+      'changed',    false
+    );
+  end if;
+
+  update public.profiles
+     set current_hp = v_clamped,
+         hp_updated_at = now()
+   where user_id = v_user_id;
+
+  return json_build_object(
+    'current_hp', v_clamped,
+    'max_hp',     v_max_hp,
+    'ceiling',    v_ceiling,
+    'changed',    true
+  );
+end;
+$$;
+
+revoke all     on function public.sync_hp(integer) from public;
+grant  execute on function public.sync_hp(integer) to authenticated;
+
+-- ------------------------------------------------------------
+-- grant_task_completion_heal: the only thing in the app that writes HP up
+-- ------------------------------------------------------------
+--
+-- Every other HP write is downward-only, which is what makes time-based
+-- regeneration safe. This one is the exception, so all of its authority has
+-- to be here rather than in the caller:
+--
+--   * it re-checks that every task actually has a completion row for the day
+--     instead of believing the client's "all done" claim;
+--   * it refuses a date more than a day either side of the server's, so a
+--     caller cannot replay a stack of historical dates; and
+--   * it requires the date to be strictly later than the last heal, which
+--     caps the whole thing at one heal per calendar day even with the
+--     tolerance above.
+--
+-- The date is a parameter at all because completion rows are keyed by the
+-- client's local date (see todayString()), and using current_date here would
+-- fail to fire for anyone far enough from UTC.
+create or replace function public.grant_task_completion_heal(p_date date)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id  uuid := auth.uid();
+  v_profile  public.profiles%rowtype;
+  v_max_hp   integer;
+  v_ceiling  integer;
+  v_current  integer;
+  v_new_hp   integer;
+  v_total    integer;
+  v_done     integer;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.' using errcode = '28000';
+  end if;
+
+  if p_date is null or p_date < current_date - 1 or p_date > current_date + 1 then
+    raise exception 'Date out of range.' using errcode = '22023';
+  end if;
+
+  select * into v_profile from public.profiles where user_id = v_user_id for update;
+  if not found then
+    raise exception 'Profile not found.' using errcode = 'P0002';
+  end if;
+
+  v_max_hp  := public.hp_max(v_profile.level, v_profile.stat_wellness);
+  v_ceiling := public.hp_ceiling(v_profile.level, v_profile.stat_wellness);
+  v_current := public.hp_regenerated(v_profile.current_hp, v_max_hp, v_profile.hp_updated_at);
+
+  -- Strictly increasing, so the +/- 1 day tolerance above cannot be walked
+  -- backwards for a second helping.
+  if v_profile.last_heal_date is not null and p_date <= v_profile.last_heal_date then
+    return json_build_object(
+      'healed', false, 'reason', 'already_healed',
+      'current_hp', v_current, 'max_hp', v_max_hp, 'overheal', greatest(0, v_current - v_max_hp)
+    );
+  end if;
+
+  select count(*) into v_total from public.tasks where user_id = v_user_id;
+
+  select count(*) into v_done
+    from public.tasks t
+   where t.user_id = v_user_id
+     and exists (
+       select 1 from public.task_completions c
+        where c.user_id = v_user_id
+          and c.task_id = t.id
+          and c.completed_date = p_date
+     );
+
+  -- No tasks is not a cleared day, it is an empty one.
+  if v_total = 0 or v_done < v_total then
+    return json_build_object(
+      'healed', false, 'reason', 'tasks_incomplete',
+      'current_hp', v_current, 'max_hp', v_max_hp, 'overheal', greatest(0, v_current - v_max_hp)
+    );
+  end if;
+
+  -- A full max-HP on top of current, not up to current. Capped at the ceiling,
+  -- which only bites for someone who was already at full.
+  v_new_hp := least(v_ceiling, v_current + v_max_hp);
+
+  -- The fresh anchor is mandatory, not incidental: writing a regenerated value
+  -- while leaving the old anchor in place would let the same elapsed time be
+  -- counted twice on the next read.
+  update public.profiles
+     set current_hp     = v_new_hp,
+         hp_updated_at  = now(),
+         last_heal_date = p_date
+   where user_id = v_user_id;
+
+  return json_build_object(
+    'healed',     true,
+    'reason',     'granted',
+    'healed_for', v_new_hp - v_current,
+    'current_hp', v_new_hp,
+    'max_hp',     v_max_hp,
+    'overheal',   greatest(0, v_new_hp - v_max_hp)
+  );
+end;
+$$;
+
+revoke all     on function public.grant_task_completion_heal(date) from public;
+grant  execute on function public.grant_task_completion_heal(date) to authenticated;
+
+-- ------------------------------------------------------------
+-- resolve_battle: pay Career's gold bonus, and preserve overheal on a win
+-- ------------------------------------------------------------
+create or replace function public.resolve_battle(
+  p_enemy_key text,
+  p_victory   boolean,
+  p_ending_hp integer
+)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_user_id       uuid := auth.uid();
+  v_enemy         public.enemies%rowtype;
+  v_profile       public.profiles%rowtype;
+  v_gold          integer := 0;
+  v_base_gold     integer := 0;
+  v_gold_bonus    integer := 0;
+  v_xp            integer := 0;
+  v_new_level     integer;
+  v_new_xp        integer;
+  v_levels_gained integer := 0;
+  v_need          integer;
+  v_last          timestamptz;
+  v_max_hp        integer;
+  v_ceiling       integer;
+  v_ending_hp     integer;
+begin
+  if v_user_id is null then
+    raise exception 'Not authenticated.' using errcode = '28000';
+  end if;
+
+  select * into v_enemy from public.enemies where key = p_enemy_key;
+  if not found then
+    raise exception 'Unknown enemy: %', p_enemy_key using errcode = '22023';
+  end if;
+
+  select * into v_profile from public.profiles where user_id = v_user_id for update;
+  if not found then
+    raise exception 'Profile not found.' using errcode = 'P0002';
+  end if;
+
+  if v_profile.level < v_enemy.min_level then
+    raise exception 'Requires level %.', v_enemy.min_level using errcode = '22023';
+  end if;
+
+  -- The shortest winnable fight is ~20s. Anything faster is a script calling
+  -- the RPC directly, not someone playing.
+  select max(created_at) into v_last from public.battle_log where user_id = v_user_id;
+  if v_last is not null and v_last > now() - interval '10 seconds' then
+    raise exception 'Too soon since your last battle.' using errcode = '55000';
+  end if;
+
+  -- Clamp the client's reported HP against a bound computed here. A defeat is
+  -- always zero regardless of what the client claims.
+  --
+  -- The bound is hp_ceiling, not hp_max: winning a fight while still carrying
+  -- the day's overheal must not quietly strip it.
+  v_max_hp  := public.hp_max(v_profile.level, v_profile.stat_wellness);
+  v_ceiling := public.hp_ceiling(v_profile.level, v_profile.stat_wellness);
+  if p_victory then
+    v_ending_hp := greatest(0, least(coalesce(p_ending_hp, 0), v_ceiling));
+  else
+    v_ending_hp := 0;
+  end if;
+
+  v_new_level := v_profile.level;
+  v_new_xp    := v_profile.xp;
+
+  if p_victory then
+    -- Career's cut. Read off the profile, never off the request: the enemy's
+    -- reward and the multiplier both come from the server, so the only thing
+    -- the client got to choose was which enemy it claims to have fought.
+    v_base_gold  := v_enemy.gold_reward;
+    v_gold_bonus := (v_base_gold * public.gold_bonus_percent(v_profile.stat_career)) / 100;
+    v_gold       := v_base_gold + v_gold_bonus;
+    v_xp         := v_enemy.xp_reward;
+    v_new_xp     := v_new_xp + v_xp;
+
+    -- Loop, so one big win can carry across several levels.
+    loop
+      v_need := 100 + (v_new_level - 1) * 60;
+      exit when v_new_xp < v_need;
+      v_new_xp        := v_new_xp - v_need;
+      v_new_level     := v_new_level + 1;
+      v_levels_gained := v_levels_gained + 1;
+    end loop;
+  end if;
+
+  -- One update for both outcomes: gold/xp/level are unchanged on a loss
+  -- (the locals still hold their current values), but HP must persist either way.
+  update public.profiles
+     set gold          = gold + v_gold,
+         xp            = v_new_xp,
+         level         = v_new_level,
+         current_hp    = v_ending_hp,
+         hp_updated_at = now()
+   where user_id = v_user_id;
+
+  insert into public.battle_log (user_id, enemy_key, victory, gold_awarded, xp_awarded)
+  values (v_user_id, p_enemy_key, p_victory, v_gold, v_xp);
+
+  return json_build_object(
+    'gold_awarded',  v_gold,
+    'gold_bonus',    v_gold_bonus,
+    'xp_awarded',    v_xp,
+    'gold',          v_profile.gold + v_gold,
+    'xp',            v_new_xp,
+    'level',         v_new_level,
+    'levels_gained', v_levels_gained,
+    'current_hp',    v_ending_hp,
+    -- Recomputed for the new level: a level-up raises the ceiling.
+    'max_hp',        public.hp_max(v_new_level, v_profile.stat_wellness),
+    'hp_ceiling',    public.hp_ceiling(v_new_level, v_profile.stat_wellness)
+  );
+end;
+$$;
+
+revoke all     on function public.resolve_battle(text, boolean, integer) from public;
+grant  execute on function public.resolve_battle(text, boolean, integer) to authenticated;
+
+revoke all     on function public.hp_ceiling(integer, integer) from public;
+grant  execute on function public.hp_ceiling(integer, integer) to authenticated;
+revoke all     on function public.hp_regenerated(integer, integer, timestamptz) from public;
+grant  execute on function public.hp_regenerated(integer, integer, timestamptz) to authenticated;
+revoke all     on function public.gold_bonus_percent(integer) from public;
+grant  execute on function public.gold_bonus_percent(integer) to authenticated;

@@ -15,8 +15,26 @@ export const MAGIC_MANA_COST = 18
 export const ATTACK_MANA_GAIN = 3
 export const DEFEND_MANA_GAIN = 12
 
-/** Multiplier applied to incoming damage while the player is defending. */
+/**
+ * Multiplier applied to incoming damage while the player is defending, at
+ * zero Body. Body improves on it -- see `defendMitigation()`.
+ */
 export const DEFEND_MITIGATION = 0.4
+
+/**
+ * How much of a guarded blow each point of Body shaves off, and the hard
+ * floor that scaling stops at.
+ *
+ * The floor is the load-bearing part. Defend already pays mana as well as
+ * mitigating, so an unbounded scale would eventually make bracing strictly
+ * better than swinging against anything that telegraphs. At 0.15 a guarded
+ * heavy still lands for 3.0 * 0.15 = 0.45x base, so eating the hit stays a
+ * real cost rather than a formality. This is the HEAVY_MULTIPLIER trade being
+ * protected from the opposite direction -- read that note too before touching
+ * either number.
+ */
+export const DEFEND_MITIGATION_FLOOR = 0.15
+export const DEFEND_MITIGATION_PER_BODY = 0.01
 
 /**
  * A telegraphed heavy lands for this much of the enemy's base damage.
@@ -36,6 +54,96 @@ export const RECOVER_FRACTION = 0.08
 export const DAMAGE_VARIANCE = 0.15
 
 // ---------------------------------------------------------------
+// Stat scaling
+//
+// Each habit category buys exactly one combat lever, so which tasks you
+// actually do shapes how you fight:
+//
+//   Body     -> physical damage, and how much a raised guard absorbs
+//   Mind     -> magic damage, and the size of the mana pool
+//   Wellness -> max HP
+//   Career   -> gold earned, everywhere
+//
+// Anything here that the server also needs is written in whole percents
+// rather than floats, because it has to be mirrored in PL/pgSQL exactly.
+// Integer division agrees between the two languages; 0.02 does not.
+// ---------------------------------------------------------------
+
+/** Max HP per point of Wellness, on top of the level curve. */
+export const HP_PER_WELLNESS = 4
+
+/** Max mana per point of Mind. */
+export const MANA_PER_MIND = 3
+
+/** Magic damage per point of Mind, in whole percent of a point. */
+export const MAGIC_PER_MIND_PCT = 250
+
+/**
+ * Gold bonus per point of Career, in whole percent, and its cap.
+ *
+ * MIRRORED in gold_bonus_percent() in supabase/schema.sql: battle payouts are
+ * computed inside resolve_battle because the profiles update policy would let
+ * a client-supplied reward be written straight from the browser. Change one,
+ * change the other. Integer percent exists for exactly this reason.
+ */
+export const CAREER_GOLD_PCT_PER_POINT = 2
+export const CAREER_GOLD_BONUS_CAP_PCT = 100
+
+/**
+ * Max HP for a level and Wellness score.
+ *
+ * MIRRORED in hp_max() in supabase/schema.sql -- resolve_battle has to clamp
+ * a client-reported HP, and a clamp trusting the client for its own bound
+ * would not be a clamp.
+ */
+export function hpMax(level: number, wellness: number): number {
+  return 60 + (Math.max(1, level) - 1) * 12 + Math.max(0, wellness) * HP_PER_WELLNESS
+}
+
+/**
+ * The absolute HP ceiling, overheal included.
+ *
+ * Clearing the day's tasks heals a full max-HP on top of current HP, so
+ * full -> 200% is the most that can ever be reached.
+ * MIRRORED in hp_ceiling() in supabase/schema.sql.
+ */
+export function hpCeiling(maxHp: number): number {
+  return maxHp * 2
+}
+
+/** Max mana for a Mind score. */
+export function manaMax(mind: number): number {
+  return 40 + Math.max(0, mind) * MANA_PER_MIND
+}
+
+/**
+ * Incoming-damage multiplier while guarding, improved by Body.
+ * Clamped at DEFEND_MITIGATION_FLOOR -- see the note there.
+ */
+export function defendMitigation(body: number): number {
+  return Math.max(
+    DEFEND_MITIGATION_FLOOR,
+    DEFEND_MITIGATION - Math.max(0, body) * DEFEND_MITIGATION_PER_BODY,
+  )
+}
+
+/** Career's gold bonus, in whole percent. Mirrored in SQL. */
+export function careerGoldBonusPercent(career: number): number {
+  return Math.min(CAREER_GOLD_BONUS_CAP_PCT, Math.max(0, career) * CAREER_GOLD_PCT_PER_POINT)
+}
+
+/**
+ * Applies Career's bonus to a gold amount.
+ *
+ * Integer arithmetic, and floor rather than round, so this agrees to the coin
+ * with the PL/pgSQL version that pays out battle gold.
+ */
+export function applyGoldBonus(base: number, career: number): number {
+  const gold = Math.max(0, Math.floor(base))
+  return gold + Math.floor((gold * careerGoldBonusPercent(career)) / 100)
+}
+
+// ---------------------------------------------------------------
 // Derived player stats
 // ---------------------------------------------------------------
 
@@ -44,6 +152,10 @@ export interface PlayerStats {
   maxMana: number
   attackPower: number
   magicPower: number
+  /** Incoming-damage multiplier while guarding. Lower is better. */
+  defendMitigation: number
+  /** Highest HP that overheal can reach. */
+  hpCeiling: number
 }
 
 /**
@@ -56,17 +168,23 @@ export interface PlayerStats {
 export function derivePlayerStats(profile: Profile, weapon: ShopItem | null): PlayerStats {
   const weaponPower = weapon?.combat_power ?? 0
   const isCasterWeapon = weapon?.required_stat === 'stat_mind'
+  const maxHp = hpMax(profile.level, profile.stat_wellness)
 
   return {
-    maxHp: 60 + (profile.level - 1) * 12 + profile.stat_wellness * 4,
-    maxMana: 40 + profile.stat_mind * 3,
+    maxHp,
+    hpCeiling: hpCeiling(maxHp),
+    maxMana: manaMax(profile.stat_mind),
     // Bare-handed floor. Deliberately low: buying a first weapon is the early
     // progression gate, and 6 keeps an unarmed player competitive with the two
     // starter enemies without letting them skip the Shop entirely.
     attackPower: (weaponPower || 6) + profile.stat_body,
     // Base 10 keeps Magic a usable burst even at zero Mind; the per-point
     // scaling is what makes it a caster's payoff rather than a universal best.
-    magicPower: 10 + Math.floor(profile.stat_mind * 2.5) + (isCasterWeapon ? Math.floor(weaponPower * 0.5) : 0),
+    magicPower:
+      10 +
+      Math.floor((profile.stat_mind * MAGIC_PER_MIND_PCT) / 100) +
+      (isCasterWeapon ? Math.floor(weaponPower * 0.5) : 0),
+    defendMitigation: defendMitigation(profile.stat_body),
   }
 }
 
@@ -129,12 +247,15 @@ export function resolveEnemyDamage(
   enemy: Enemy,
   move: EnemyMove,
   playerDefending: boolean,
+  mitigation: number = DEFEND_MITIGATION,
   rng: Rng = Math.random,
 ): number {
   if (move === 'recover') return 0
   const base = move === 'heavy' ? enemy.attack_damage * HEAVY_MULTIPLIER : enemy.attack_damage
   const raw = rollDamage(base, rng)
-  return playerDefending ? Math.max(1, Math.round(raw * DEFEND_MITIGATION)) : raw
+  // Never below 1: a guard that fully negated a hit would turn bracing through
+  // a whole fight into a stalemate the player cannot lose.
+  return playerDefending ? Math.max(1, Math.round(raw * mitigation)) : raw
 }
 
 // ---------------------------------------------------------------
@@ -170,6 +291,12 @@ const MS_PER_HOUR = 3_600_000
  * Note this does NOT advance the anchor -- callers must not persist the result
  * as a new baseline unless they also write a fresh timestamp, or partial
  * progress would be dropped on every read.
+ *
+ * Regeneration tops out at maxHp. The overheal from clearing a day's tasks is
+ * deliberately temporary, so resting can carry you back to full but never
+ * back into the bonus. An already-overhealed value is returned untouched
+ * rather than clamped to maxHp -- clamping here would silently delete the
+ * bonus on the next page load, since this is what every read renders from.
  */
 export function regeneratedHp(
   storedHp: number | null,
@@ -178,14 +305,42 @@ export function regeneratedHp(
   now: number = Date.now(),
 ): number {
   if (storedHp === null || storedHp === undefined) return maxHp
-  if (!hpUpdatedAt) return Math.max(0, Math.min(maxHp, storedHp))
+
+  const stored = Math.max(0, Math.min(hpCeiling(maxHp), storedHp))
+  // At or above full there is nothing to accrue, and this is also the guard
+  // that keeps the regen path from touching overheal at all.
+  if (stored >= maxHp) return stored
+  if (!hpUpdatedAt) return stored
 
   const anchor = new Date(hpUpdatedAt).getTime()
-  if (Number.isNaN(anchor)) return Math.max(0, Math.min(maxHp, storedHp))
+  if (Number.isNaN(anchor)) return stored
 
   const elapsedHours = Math.max(0, (now - anchor) / MS_PER_HOUR)
   const healed = Math.floor(elapsedHours * HP_REGEN_FRACTION_PER_HOUR * maxHp)
-  return Math.max(0, Math.min(maxHp, storedHp + healed))
+  return Math.max(0, Math.min(maxHp, stored + healed))
+}
+
+// ---------------------------------------------------------------
+// Task-completion overheal
+//
+// Clearing every task for the day heals a full max-HP, applied on top of
+// current HP instead of being capped at it -- so 50% becomes 150% and 1%
+// becomes 101%. The excess is a temporary buffer: it soaks damage first, and
+// regeneration will never put it back.
+//
+// It needs no separate pool. Overheal is just HP above maxHp, which means
+// every damage path in the reducer already spends it in the right order and
+// `sync_hp` already persists it draining away.
+// ---------------------------------------------------------------
+
+/** HP after clearing the day's tasks: current HP plus a full max-HP heal. */
+export function taskCompletionHeal(currentHp: number, maxHp: number): number {
+  return Math.min(hpCeiling(maxHp), Math.max(0, currentHp) + maxHp)
+}
+
+/** The temporary portion of an HP total. Zero when not overhealed. */
+export function overhealAmount(hp: number, maxHp: number): number {
+  return Math.max(0, hp - maxHp)
 }
 
 /**

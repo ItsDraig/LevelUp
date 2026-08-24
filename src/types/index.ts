@@ -22,6 +22,7 @@ export interface Profile {
   xp: number // progress toward the next level; reset by the carry on level-up
   current_hp: number | null // persists between battles; null on legacy rows => full
   hp_updated_at: string | null // anchor that time-based regen accrues from
+  last_heal_date: string | null // YYYY-MM-DD -- day the task-completion heal was granted
   created_at: string
 }
 
@@ -122,6 +123,8 @@ export interface CombatLogEntry {
 // What resolve_battle() returns.
 export interface BattleResult {
   gold_awarded: number
+  /** The Career slice of gold_awarded, so the payout can show its own breakdown. */
+  gold_bonus: number
   xp_awarded: number
   gold: number
   xp: number
@@ -129,4 +132,17 @@ export interface BattleResult {
   levels_gained: number
   current_hp: number
   max_hp: number
+  hp_ceiling: number
+}
+
+// What grant_task_completion_heal() returns. `healed: false` is an ordinary
+// outcome, not an error -- the day's heal is once-per-day and the RPC re-checks
+// the completion rows itself, so a rejection just means there is nothing to do.
+export interface TaskHealResult {
+  healed: boolean
+  reason: 'granted' | 'already_healed' | 'tasks_incomplete'
+  healed_for?: number
+  current_hp: number
+  max_hp: number
+  overheal: number
 }

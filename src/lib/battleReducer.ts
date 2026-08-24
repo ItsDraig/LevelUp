@@ -1,4 +1,5 @@
 import {
+  DEFEND_MITIGATION,
   MAGIC_MANA_COST,
   PLAYER_TICK_MS,
   RECOVER_FRACTION,
@@ -47,7 +48,14 @@ export type BattleEvent =
   | { type: 'tick'; deltaMs: number; rng?: Rng }
   | { type: 'quit' }
 
-const EMPTY_STATS: PlayerStats = { maxHp: 0, maxMana: 0, attackPower: 0, magicPower: 0 }
+const EMPTY_STATS: PlayerStats = {
+  maxHp: 0,
+  maxMana: 0,
+  attackPower: 0,
+  magicPower: 0,
+  defendMitigation: DEFEND_MITIGATION,
+  hpCeiling: 0,
+}
 
 export const initialBattleState: BattleState = {
   phase: 'picking',
@@ -84,9 +92,13 @@ export function battleReducer(state: BattleState, event: BattleEvent): BattleSta
         phase: 'fighting',
         enemy: event.enemy,
         stats,
-        // Carried over from the last fight, not reset -- resting is the only
-        // thing that heals.
-        playerHp: Math.max(0, Math.min(stats.maxHp, event.startingHp)),
+        // Carried over from the last fight, not reset -- resting and clearing
+        // the day's tasks are the only things that heal.
+        //
+        // Clamped to hpCeiling rather than maxHp: clamping to maxHp here would
+        // strip the task-completion overheal the moment a fight started, which
+        // is the one place it is meant to be spent.
+        playerHp: Math.max(0, Math.min(stats.hpCeiling, event.startingHp)),
         // Starting on a partial bar means the opening Magic needs earning.
         playerMana: Math.min(stats.maxMana, Math.round(stats.maxMana * 0.4)),
         enemyHp: event.enemy.max_hp,
@@ -169,7 +181,13 @@ export function battleReducer(state: BattleState, event: BattleEvent): BattleSta
         if (next.telegraph) {
           // The wind-up announced last tick always follows through.
           next.telegraph = false
-          const damage = resolveEnemyDamage(enemy, 'heavy', next.defending, rng)
+          const damage = resolveEnemyDamage(
+            enemy,
+            'heavy',
+            next.defending,
+            next.stats.defendMitigation,
+            rng,
+          )
           next.playerHp = Math.max(0, next.playerHp - damage)
           next.hit = { id: next.seq, side: 'player', amount: damage, kind: 'heavy' }
           next = withLog(
@@ -193,7 +211,13 @@ export function battleReducer(state: BattleState, event: BattleEvent): BattleSta
             next.hit = { id: next.seq, side: 'enemy', amount: healed, kind: 'heal' }
             next = withLog(next, 'enemy', `${enemy.name} shrugs off ${healed} damage.`)
           } else {
-            const damage = resolveEnemyDamage(enemy, 'basic', next.defending, rng)
+            const damage = resolveEnemyDamage(
+              enemy,
+              'basic',
+              next.defending,
+              next.stats.defendMitigation,
+              rng,
+            )
             next.playerHp = Math.max(0, next.playerHp - damage)
             next.hit = { id: next.seq, side: 'player', amount: damage, kind: 'basic' }
             next = withLog(next, 'enemy', `${enemy.name} hits you for ${damage}.`)

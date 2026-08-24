@@ -3,7 +3,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { AnimatePresence, motion } from 'motion/react'
 import { ChevronLeft, Coins, Lock, Sparkles, Sword } from 'lucide-react'
-import { MAGIC_MANA_COST, derivePlayerStats, xpToNext } from '@/lib/battle'
+import {
+  MAGIC_MANA_COST,
+  careerGoldBonusPercent,
+  derivePlayerStats,
+  overhealAmount,
+  xpToNext,
+} from '@/lib/battle'
 import { useBattle } from '@/lib/useBattle'
 import { useCountUp } from '@/lib/useCountUp'
 import { resolveBattleAction, syncHpAction } from '@/app/battle/actions'
@@ -13,6 +19,16 @@ import EnemySprite from './EnemySprite'
 import HealCountdown from './HealCountdown'
 import HealthBar from './HealthBar'
 import type { BattleResult, Enemy, Profile, ShopItem } from '@/types'
+
+/** One "stat -> what it buys" row in the pre-fight summary. */
+function StatEffect({ label, color, value }: { label: string; color: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-[10px] uppercase tracking-wider" style={{ color }}>{label}</span>
+      <span className="text-[10px]" style={{ color: 'var(--text2)' }}>{value}</span>
+    </div>
+  )
+}
 
 interface BattleClientProps {
   profile: Profile
@@ -70,7 +86,10 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
 
   // Recomputed from local level/xp so a mid-session level-up raises the
   // ceiling straight away rather than waiting for a reload.
-  const maxHp = derivePlayerStats({ ...profile, level, xp }, weapon).maxHp
+  const stats = derivePlayerStats({ ...profile, level, xp }, weapon)
+  const maxHp = stats.maxHp
+  const overheal = overhealAmount(hp, maxHp)
+  const careerBonusPct = careerGoldBonusPercent(profile.stat_career)
   const knockedOut = hp <= 0
 
   useEffect(() => {
@@ -107,7 +126,13 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
   function backToCamp() {
     // Fleeing mid-fight has to persist the damage taken, or retreating from a
     // losing fight would be a free full heal.
-    if (state.phase === 'fighting' && state.playerHp < state.stats.maxHp) {
+    //
+    // Sent unconditionally rather than only when below max HP. Overheal puts
+    // the player *above* max, so the old guard skipped the write for anyone
+    // who fled after spending only their bonus -- reopening the free heal for
+    // exactly the state that has the most to lose. sync_hp discards anything
+    // that is not a decrease, so an unnecessary call costs nothing.
+    if (state.phase === 'fighting') {
       const fled = state.playerHp
       setHp(fled)
       syncHpAction(fled).then(res => {
@@ -154,8 +179,20 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
                 {hp} / {maxHp}
               </span>
             </div>
-            <HealthBar value={hp} max={maxHp} color="var(--cat-wellness)" height={6} />
+            <HealthBar
+              value={hp}
+              max={maxHp}
+              color="var(--cat-wellness)"
+              overhealColor="var(--gold)"
+              height={6}
+            />
             <HealCountdown currentHp={hp} maxHp={maxHp} />
+            {overheal > 0 && (
+              <p className="text-[10px] mt-1" style={{ color: 'var(--gold)' }}>
+                +{overheal} bonus HP from clearing today&apos;s tasks -- spent first, and
+                it will not come back.
+              </p>
+            )}
 
             <div className="flex items-center gap-3 mt-3">
               <div className="flex items-center gap-1.5">
@@ -170,6 +207,33 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
                   {MAGIC_MANA_COST} MP per cast
                 </span>
               </div>
+            </div>
+
+            {/* What the four habit stats are actually buying, spelled out.
+                All of this was already feeding combat maths, but nothing on
+                screen said so, which made the stats read as decoration. */}
+            <div
+              className="grid grid-cols-2 gap-x-3 gap-y-1 mt-3 pt-3"
+              style={{ borderTop: '0.5px solid var(--border)' }}
+            >
+              <StatEffect label="Body" color="var(--cat-body)" value={`+${profile.stat_body} dmg`} />
+              <StatEffect
+                label="Body"
+                color="var(--cat-body)"
+                value={`${Math.round((1 - stats.defendMitigation) * 100)}% blocked`}
+              />
+              <StatEffect label="Mind" color="var(--cat-mind)" value={`${stats.magicPower} magic`} />
+              <StatEffect label="Mind" color="var(--cat-mind)" value={`${stats.maxMana} max MP`} />
+              <StatEffect
+                label="Wellness"
+                color="var(--cat-wellness)"
+                value={`${maxHp} max HP`}
+              />
+              <StatEffect
+                label="Career"
+                color="var(--cat-career)"
+                value={careerBonusPct > 0 ? `+${careerBonusPct}% gold` : 'no bonus yet'}
+              />
             </div>
           </div>
         </div>
@@ -341,6 +405,7 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
           value={state.playerHp}
           max={state.stats.maxHp}
           color="var(--cat-wellness)"
+          overhealColor="var(--gold)"
           charge={state.playerCharge}
         />
         <div className="mt-1.5">
@@ -388,6 +453,11 @@ export default function BattleClient({ profile, weapon, enemies, currentHp }: Ba
                   <p className="text-sm" style={{ color: 'var(--text)' }}>
                     +{result.gold_awarded} gold · +{result.xp_awarded} XP
                   </p>
+                  {result.gold_bonus > 0 && (
+                    <p className="text-[11px]" style={{ color: 'var(--cat-career)' }}>
+                      includes +{result.gold_bonus}g from Career
+                    </p>
+                  )}
                   {result.levels_gained > 0 && (
                     <p className="text-sm font-medium" style={{ color: 'var(--gold)' }}>
                       Level {result.level}!
